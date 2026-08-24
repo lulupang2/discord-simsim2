@@ -1,5 +1,6 @@
 import { Resolver } from "node:dns";
 import { request as httpsRequest } from "node:https";
+import { spawn } from "node:child_process";
 import type { LookupFunction } from "node:net";
 
 export type ChatRole = "user" | "assistant";
@@ -50,6 +51,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   readonly #thinkingLevel: GeminiThinkingLevel;
   readonly #endpoint: string;
   readonly #fetch: FetchLike;
+  readonly #fallbackFetch: FetchLike;
   readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: GeminiInteractionsClientOptions) {
@@ -69,6 +71,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
 
     this.#endpoint = `${base}/v1beta/interactions?alt=sse`;
     this.#fetch = options.fetchImpl ?? createGeminiFetch();
+    this.#fallbackFetch = createCurlGeminiFetch();
     this.#sleep = options.sleepImpl ?? sleep;
   }
 
@@ -132,6 +135,20 @@ export class GeminiInteractionsClient implements LlmStreamClient {
           body,
         });
       } catch (error) {
+        if (attempt === 1) {
+          try {
+            return await this.#fallbackFetch(this.#endpoint, {
+              method: "POST",
+              headers: {
+                "x-goog-api-key": this.#apiKey,
+                "content-type": "application/json",
+              },
+              body,
+            });
+          } catch {
+            // Continue with the bounded HTTPS retry loop below.
+          }
+        }
         if (attempt === MAX_REQUEST_ATTEMPTS) {
           throw new LlmProviderError(
             `Could not reach the Gemini API (${networkFailureLabel(error)}).`,
@@ -307,6 +324,70 @@ function createGeminiFetch(): FetchLike {
       request.write(init.body);
     }
     request.end();
+  });
+}
+
+function createCurlGeminiFetch(): FetchLike {
+  return async (input, init) => new Promise<Response>((resolve, reject) => {
+    const headers = new Headers(init.headers);
+    const apiKey = headers.get("x-goog-api-key");
+    if (apiKey === null || apiKey.length === 0) {
+      reject(new Error("Gemini API key header is missing."));
+      return;
+    }
+
+    const script = [
+      "exec curl --silent --show-error --no-buffer --fail-with-body",
+      "--retry 3 --retry-delay 1 --retry-all-errors --max-time 90",
+      "--request POST \"$GEMINI_URL\"",
+      "--header \"x-goog-api-key: $GEMINI_KEY\"",
+      "--header \"content-type: application/json\"",
+      "--data-binary @-",
+    ].join(" ");
+    const child = spawn("/bin/bash", ["-lc", script], {
+      env: {
+        ...process.env,
+        GEMINI_URL: input,
+        GEMINI_KEY: apiKey,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const stdout = child.stdout;
+    if (stdout === null) {
+      reject(new Error("curl stdout pipe was not created."));
+      child.kill();
+      return;
+    }
+    child.stderr?.resume();
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        stdout.on("data", (chunk: Buffer) => {
+          controller.enqueue(chunk);
+        });
+        child.once("error", (error) => {
+          controller.error(error);
+        });
+        child.once("close", (code) => {
+          if (code === 0) {
+            controller.close();
+          } else {
+            controller.error(new Error(`curl exited with code ${code ?? -1}.`));
+          }
+        });
+      },
+      cancel() {
+        child.kill();
+      },
+    });
+
+    resolve(new Response(stream, { status: 200 }));
+    if (typeof init.body === "string") {
+      child.stdin?.end(init.body);
+    } else {
+      child.stdin?.end();
+    }
   });
 }
 
