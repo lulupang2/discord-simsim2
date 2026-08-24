@@ -12,6 +12,7 @@ import { NeonLogSink } from "./db/log-sink.js";
 import { attachDiscordMessageHandler } from "./discord.js";
 import { OpenAICompatibleClient } from "./llm.js";
 import { consoleLogger, createLogger, summarizeError } from "./logging.js";
+import { createElysiaServer } from "./server/index.js";
 
 async function main(): Promise<void> {
   let config: BotConfig;
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     apiKey: config.llmApiKey,
     model: config.llmModel,
     baseUrl: config.llmBaseUrl,
+    maxTokens: config.llmMaxTokens,
   });
   const conversations = new ConversationService(llm, {
     maxHistoryMessages: config.maxHistoryMessages,
@@ -66,6 +68,14 @@ async function main(): Promise<void> {
   });
 
   attachDiscordMessageHandler(client, conversations, logger, conversationStore);
+  createElysiaServer({
+    port: config.port,
+    config,
+    store: conversationStore,
+    llm,
+    client,
+    logger,
+  });
   client.once(Events.ClientReady, (readyClient) => {
     logger.info("Discord bot is ready.", {
       user: readyClient.user.tag,

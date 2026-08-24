@@ -1,5 +1,6 @@
 const DEFAULT_LLM_BASE_URL = "https://api.tokenrouter.com/v1";
 const DEFAULT_MAX_HISTORY_MESSAGES = 20;
+const DEFAULT_LLM_MAX_TOKENS = 300;
 
 export interface BotConfig {
   readonly discordToken: string;
@@ -9,6 +10,8 @@ export interface BotConfig {
   readonly databaseUrl: string;
   readonly systemPrompt: string | undefined;
   readonly maxHistoryMessages: number;
+  readonly llmMaxTokens: number;
+  readonly port: number;
 }
 
 export class ConfigurationError extends Error {
@@ -24,6 +27,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const databaseUrl = readDatabaseUrl(env.DATABASE_URL, errors);
   const maxHistoryMessages = readMaxHistory(env.MAX_HISTORY_MESSAGES, errors);
   const systemPrompt = readSystemPrompt(env.BOT_SYSTEM_PROMPT);
+  const maxTokens = readMaxTokens(env.LLM_MAX_TOKENS, errors);
+  const port = readPort(env.PORT, errors);
   if (
     errors.length > 0 ||
     discordToken === undefined ||
@@ -31,7 +36,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     llmModel === undefined ||
     llmBaseUrl === undefined ||
     databaseUrl === undefined ||
-    maxHistoryMessages === undefined
+    maxHistoryMessages === undefined ||
+    maxTokens === undefined
   ) {
     throw new ConfigurationError(
       `Invalid configuration:\n${errors.map((error) => `- ${error}`).join("\n")}`,
@@ -46,6 +52,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     databaseUrl,
     systemPrompt,
     maxHistoryMessages,
+    llmMaxTokens: maxTokens ?? DEFAULT_LLM_MAX_TOKENS,
+    port: port ?? 3000,
   };
 }
 
@@ -150,10 +158,36 @@ function readMaxHistory(rawValue: string | undefined, errors: string[]): number 
   return parsed;
 }
 
+function readMaxTokens(rawValue: string | undefined, errors: string[]): number | undefined {
+  const value = rawValue?.trim();
+  if (value === undefined || value.length === 0) {
+    return DEFAULT_LLM_MAX_TOKENS;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 16 || parsed > 8_192) {
+    errors.push("LLM_MAX_TOKENS must be an integer between 16 and 8192.");
+    return undefined;
+  }
+
+  return parsed;
+}
+
 function readSystemPrompt(rawValue: string | undefined): string | undefined {
   if (rawValue === undefined || rawValue.trim().length === 0) {
     return undefined;
   }
 
   return rawValue;
+}
+function readPort(rawValue: string | undefined, errors: string[]): number | undefined {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return 3000;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 65535) {
+    errors.push("PORT must be an integer between 1 and 65535.");
+    return undefined;
+  }
+  return parsed;
 }

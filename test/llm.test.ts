@@ -92,4 +92,33 @@ describe("OpenAICompatibleClient", () => {
       onDelta: () => undefined,
     })).rejects.toEqual(new LlmProviderError("The LLM provider returned HTTP 403."));
   });
+  it("includes max_tokens in the request body when configured", async () => {
+    let capturedInit: RequestInit | undefined;
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
+      maxTokens: 300,
+      fetchImpl: async (_input, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "짧은 답변" } }],
+        }), { status: 200 });
+      },
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "질문" }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toBe("짧은 답변");
+    expect(JSON.parse(String(capturedInit?.body))).toEqual({
+      model: "qwen/qwen3.8-max-free",
+      messages: [{ role: "user", content: "질문" }],
+      max_tokens: 300,
+    });
+  });
 });
+

@@ -6,7 +6,7 @@ import type {
 } from "../conversation.js";
 import type { ChatMessage } from "../llm.js";
 import type { Database } from "./client.js";
-import { messages } from "./schema.js";
+import { botLogs, messages } from "./schema.js";
 
 export interface FineTuningSample {
   readonly messages: readonly {
@@ -208,6 +208,51 @@ export class NeonConversationStore implements ConversationStore {
       earliestMessage: rangeRow?.earliest ?? null,
       latestMessage: rangeRow?.latest ?? null,
     };
+  }
+  public async listMessages(options?: {
+    channelId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ items: typeof messages.$inferSelect[]; total: number }> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const whereClause = options?.channelId ? eq(messages.channelId, options.channelId) : undefined;
+
+    const [countResult] = await this.db.select({ count: count() }).from(messages).where(whereClause);
+    const total = Number(countResult?.count ?? 0);
+
+    const items = await this.db
+      .select()
+      .from(messages)
+      .where(whereClause)
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit)
+      .offset(offset);
+
+    return { items, total };
+  }
+
+  public async listLogs(options?: {
+    level?: "info" | "warn" | "error";
+    limit?: number;
+    offset?: number;
+  }): Promise<{ items: typeof botLogs.$inferSelect[]; total: number }> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const whereClause = options?.level ? eq(botLogs.level, options.level) : undefined;
+
+    const [countResult] = await this.db.select({ count: count() }).from(botLogs).where(whereClause);
+    const total = Number(countResult?.count ?? 0);
+
+    const items = await this.db
+      .select()
+      .from(botLogs)
+      .where(whereClause)
+      .orderBy(desc(botLogs.createdAt), desc(botLogs.id))
+      .limit(limit)
+      .offset(offset);
+
+    return { items, total };
   }
 }
 

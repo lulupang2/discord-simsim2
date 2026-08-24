@@ -21,6 +21,8 @@ describe("loadConfig", () => {
       databaseUrl: "postgresql://user:password@db.example/neondb?sslmode=require",
       systemPrompt: undefined,
       maxHistoryMessages: 20,
+      llmMaxTokens: 300,
+      port: 3000,
     });
   });
 
@@ -38,6 +40,8 @@ describe("loadConfig", () => {
       databaseUrl: "postgresql://user:password@db.example/neondb?sslmode=require",
       systemPrompt: "  preserve this spacing  ",
       maxHistoryMessages: 7,
+      llmMaxTokens: 300,
+      port: 3000,
     });
   });
 
@@ -66,6 +70,16 @@ describe("loadConfig", () => {
         ...REQUIRED_ENV,
         MAX_HISTORY_MESSAGES: value,
       })).toThrow("MAX_HISTORY_MESSAGES must be a positive integer.");
+    },
+  );
+
+  it.each(["0", "15", "8193", "1.5", "not-a-number"])(
+    "rejects invalid LLM_MAX_TOKENS value %s",
+    (value) => {
+      expect(() => loadConfig({
+        ...REQUIRED_ENV,
+        LLM_MAX_TOKENS: value,
+      })).toThrow("LLM_MAX_TOKENS must be an integer between 16 and 8192.");
     },
   );
 

@@ -22,6 +22,7 @@ export interface OpenAICompatibleClientOptions {
   readonly model: string;
   readonly baseUrl: string;
   readonly fetchImpl?: FetchLike;
+  readonly maxTokens?: number;
   readonly sleepImpl?: (milliseconds: number) => Promise<void>;
 }
 
@@ -37,6 +38,7 @@ export class OpenAICompatibleClient implements LlmStreamClient {
   readonly #model: string;
   readonly #endpoint: string;
   readonly #fetch: FetchLike;
+  readonly #maxTokens: number | undefined;
   readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: OpenAICompatibleClientOptions) {
@@ -45,13 +47,18 @@ export class OpenAICompatibleClient implements LlmStreamClient {
     this.#endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#sleep = options.sleepImpl ?? sleep;
+    this.#maxTokens = options.maxTokens;
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {
     const messages = request.systemPrompt === undefined
       ? request.messages
       : [{ role: "system" as const, content: request.systemPrompt }, ...request.messages];
-    const response = await this.#fetchWithRetry(JSON.stringify({ model: this.#model, messages }));
+    const body: Record<string, unknown> = { model: this.#model, messages };
+    if (this.#maxTokens !== undefined) {
+      body.max_tokens = this.#maxTokens;
+    }
+    const response = await this.#fetchWithRetry(JSON.stringify(body));
 
     if (!response.ok) {
       throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
