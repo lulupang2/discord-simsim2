@@ -6,10 +6,6 @@ export interface ChatMessage {
   readonly content: string;
 }
 
-export interface GeminiContentItem {
-  readonly role: "user" | "model";
-  readonly parts: readonly { readonly text: string }[];
-}
 
 export interface StreamCompletionRequest {
   readonly messages: readonly ChatMessage[];
@@ -68,7 +64,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {
-    const input = toGeminiContents(request.messages);
+    const input = toGeminiInput(request.messages);
     const body: Record<string, unknown> = {
       model: this.#model,
       input,
@@ -164,11 +160,10 @@ async function sleep(milliseconds: number): Promise<void> {
   });
 }
 
-function toGeminiContents(messages: readonly ChatMessage[]): GeminiContentItem[] {
-  return messages.map((entry) => ({
-    role: entry.role === "assistant" ? "model" : "user",
-    parts: [{ text: entry.content }],
-  }));
+function toGeminiInput(messages: readonly ChatMessage[]): string {
+  return messages
+    .map((entry) => `${entry.role === "assistant" ? "Assistant" : "User"}:\n${entry.content}`)
+    .join("\n\n");
 }
 
 async function* parseGeminiEventStream(

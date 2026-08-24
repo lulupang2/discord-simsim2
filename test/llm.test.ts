@@ -77,10 +77,7 @@ describe("GeminiInteractionsClient", () => {
     const parsedBody = JSON.parse(String(capturedInit?.body));
     expect(parsedBody).toEqual({
       model: "gemini-3.7-flash",
-      input: [
-        { role: "user", parts: [{ text: "질문" }] },
-        { role: "model", parts: [{ text: "이전 답변" }] },
-      ],
+      input: "User:\n질문\n\nAssistant:\n이전 답변",
       stream: true,
       store: false,
       service_tier: "priority",
