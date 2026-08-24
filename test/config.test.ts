@@ -1,0 +1,84 @@
+import { describe, expect, it } from "vitest";
+import {
+  ConfigurationError,
+  loadConfig,
+} from "../src/config.js";
+
+const REQUIRED_ENV: NodeJS.ProcessEnv = {
+  DISCORD_TOKEN: "discord-token",
+  LLM_API_KEY: "llm-key",
+  LLM_MODEL: "model-name",
+};
+
+describe("loadConfig", () => {
+  it("loads required values and applies optional defaults", () => {
+    expect(loadConfig(REQUIRED_ENV)).toEqual({
+      discordToken: "discord-token",
+      llmApiKey: "llm-key",
+      llmModel: "model-name",
+      llmBaseUrl: "https://api.openai.com/v1",
+      systemPrompt: undefined,
+      maxHistoryMessages: 20,
+    });
+  });
+
+  it("loads explicit optional values", () => {
+    expect(loadConfig({
+      ...REQUIRED_ENV,
+      LLM_BASE_URL: "https://provider.example/openai/v1/",
+      BOT_SYSTEM_PROMPT: "  preserve this spacing  ",
+      MAX_HISTORY_MESSAGES: "7",
+    })).toEqual({
+      discordToken: "discord-token",
+      llmApiKey: "llm-key",
+      llmModel: "model-name",
+      llmBaseUrl: "https://provider.example/openai/v1",
+      systemPrompt: "  preserve this spacing  ",
+      maxHistoryMessages: 7,
+    });
+  });
+
+  it("identifies every missing required variable without printing values", () => {
+    let error: unknown;
+    try {
+      loadConfig({
+        DISCORD_TOKEN: " ",
+        LLM_API_KEY: "",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect(String(error)).toContain("DISCORD_TOKEN");
+    expect(String(error)).toContain("LLM_API_KEY");
+    expect(String(error)).toContain("LLM_MODEL");
+  });
+
+  it.each(["0", "-1", "1.5", "not-a-number"])(
+    "rejects invalid MAX_HISTORY_MESSAGES value %s",
+    (value) => {
+      expect(() => loadConfig({
+        ...REQUIRED_ENV,
+        MAX_HISTORY_MESSAGES: value,
+      })).toThrow("MAX_HISTORY_MESSAGES must be a positive integer.");
+    },
+  );
+
+  it("rejects unsafe base URLs without exposing credentials", () => {
+    const embeddedSecret = "do-not-print-this-secret";
+    let error: unknown;
+    try {
+      loadConfig({
+        ...REQUIRED_ENV,
+        LLM_BASE_URL: `https://user:${embeddedSecret}@provider.example/v1`,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect(String(error)).toContain("must not contain credentials");
+    expect(String(error)).not.toContain(embeddedSecret);
+  });
+});
