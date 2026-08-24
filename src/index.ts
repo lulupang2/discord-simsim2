@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     partials: [Partials.Channel],
   });
 
-  attachDiscordMessageHandler(client, conversations, logger);
+  attachDiscordMessageHandler(client, conversations, logger, conversationStore);
   client.once(Events.ClientReady, (readyClient) => {
     logger.info("Discord bot is ready.", {
       user: readyClient.user.tag,

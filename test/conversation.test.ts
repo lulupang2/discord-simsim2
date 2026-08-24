@@ -47,12 +47,16 @@ class RecordingClient implements LlmStreamClient {
 class RecordingStore implements ConversationStore {
   readonly exchanges: ConversationExchange[] = [];
   readonly #messages = new Map<string, ChatMessage[]>();
+  relevantResults: Array<{ role: "user" | "assistant"; content: string }> = [];
 
   constructor(
     private readonly failReads = false,
     private readonly failWrites = false,
   ) {}
 
+  async findRelevant(_query: string): Promise<readonly { role: "user" | "assistant"; content: string }[]> {
+    return this.relevantResults;
+  }
   async getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]> {
     if (this.failReads) {
       throw new Error("database read unavailable");
@@ -266,15 +270,20 @@ describe("ConversationService", () => {
     expect(transport.initialSends).toEqual(["answer"]);
   });
 
-  it("serializes overlapping requests and observes the preceding database write", async () => {
+  it("processes overlapping requests concurrently and in parallel", async () => {
     let resolveFirstStarted: (() => void) | undefined;
     const firstStarted = new Promise<void>((resolve) => {
       resolveFirstStarted = resolve;
     });
-    let resolveFirstCompletion: ((value: string) => void) | undefined;
-    const firstCompletion = new Promise<string>((resolve) => {
-      resolveFirstCompletion = resolve;
+    let resolveSecondStarted: (() => void) | undefined;
+    const secondStarted = new Promise<void>((resolve) => {
+      resolveSecondStarted = resolve;
     });
+    let resolveCompletions: (() => void) | undefined;
+    const completions = new Promise<void>((resolve) => {
+      resolveCompletions = resolve;
+    });
+
     let activeCalls = 0;
     let maximumActiveCalls = 0;
     const llm = new RecordingClient(async (_request, callIndex) => {
@@ -282,12 +291,12 @@ describe("ConversationService", () => {
       maximumActiveCalls = Math.max(maximumActiveCalls, activeCalls);
       if (callIndex === 0) {
         resolveFirstStarted?.();
-        const result = await firstCompletion;
-        activeCalls -= 1;
-        return result;
+      } else {
+        resolveSecondStarted?.();
       }
+      await completions;
       activeCalls -= 1;
-      return "second reply";
+      return callIndex === 0 ? "first reply" : "second reply";
     });
     const store = new RecordingStore();
     const transport = new RecordingTransport();
@@ -301,22 +310,36 @@ describe("ConversationService", () => {
     const first = service.handle(request("channel", "first prompt", transport));
     await firstStarted;
     const second = service.handle(request("channel", "second prompt", transport));
-    await Promise.resolve();
+    await secondStarted;
 
-    expect(llm.requests).toHaveLength(1);
-    if (resolveFirstCompletion === undefined) {
-      throw new Error("First completion resolver was not initialized.");
-    }
-    resolveFirstCompletion("first reply");
+    expect(maximumActiveCalls).toBe(2);
+    resolveCompletions?.();
     await Promise.all([first, second]);
 
-    expect(maximumActiveCalls).toBe(1);
-    expect(transport.initialSends).toEqual(["first reply", "second reply"]);
-    expect(llm.requests[1]?.messages).toEqual([
-      message("user", "first prompt"),
-      message("assistant", "first reply"),
-      message("user", "second prompt"),
-    ]);
+    expect(llm.requests).toHaveLength(2);
+  });
+
+  it("enriches the system prompt with relevant past context when available", async () => {
+    const llm = new RecordingClient(async () => "contextual answer");
+    const store = new RecordingStore();
+    store.relevantResults = [
+      { role: "user", content: "우리 집 강아지 이름은 멍멍이야" },
+      { role: "assistant", content: "기억해둘게요!" },
+    ];
+    const transport = new RecordingTransport();
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 20,
+      systemPrompt: "기본 시스템 프롬프트",
+      store,
+      logger: createLogger(),
+    });
+
+    await service.handle(request("channel", "강아지 이름이 뭐였지?", transport));
+
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0]?.systemPrompt).toContain("기본 시스템 프롬프트");
+    expect(llm.requests[0]?.systemPrompt).toContain("우리 집 강아지 이름은 멍멍이야");
+    expect(llm.requests[0]?.systemPrompt).toContain("기억해둘게요!");
   });
 
   it("contains a database read failure before calling the LLM", async () => {

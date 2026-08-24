@@ -1,4 +1,4 @@
-import type { ChatMessage, LlmStreamClient } from "./llm.js";
+import type { ChatMessage, ChatRole, LlmStreamClient } from "./llm.js";
 import { consoleLogger, summarizeError, type Logger } from "./logging.js";
 import {
   LiveStreamWriter,
@@ -31,9 +31,16 @@ export interface ConversationExchange {
   readonly assistantMessage: string;
 }
 
+export interface RelevantContext {
+  readonly role: ChatRole;
+  readonly content: string;
+  readonly createdAt?: Date;
+}
+
 export interface ConversationStore {
   getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]>;
   appendExchange(exchange: ConversationExchange): Promise<void>;
+  findRelevant?(query: string, options?: { channelId?: string; limit?: number }): Promise<readonly RelevantContext[]>;
 }
 
 export interface ConversationServiceOptions {
@@ -50,7 +57,6 @@ export class ConversationService {
   readonly #store: ConversationStore;
   readonly #streamOptions: LiveStreamWriterOptions | undefined;
   readonly #logger: Logger;
-  readonly #queue = new KeyedSerialQueue();
 
   constructor(llm: LlmStreamClient, options: ConversationServiceOptions) {
     if (!Number.isSafeInteger(options.maxHistoryMessages) || options.maxHistoryMessages <= 0) {
@@ -67,9 +73,7 @@ export class ConversationService {
 
   async handle(request: ConversationRequest): Promise<void> {
     try {
-      await this.#queue.run(request.channelId, async () => {
-        await this.#process(request);
-      });
+      await this.#process(request);
     } catch (error) {
       this.#logger.error("Unexpected conversation processing failure.", {
         channelId: request.channelId,
@@ -90,8 +94,16 @@ export class ConversationService {
     }
 
     let history: readonly ChatMessage[];
+    let relevantContext: readonly RelevantContext[] = [];
     try {
-      history = await this.#store.getRecent(request.channelId, this.#maxHistoryMessages);
+      const [recentHistory, context] = await Promise.all([
+        this.#store.getRecent(request.channelId, this.#maxHistoryMessages),
+        this.#store.findRelevant
+          ? this.#store.findRelevant(request.prompt, { channelId: request.channelId, limit: 3 })
+          : Promise.resolve([]),
+      ]);
+      history = recentHistory;
+      relevantContext = context;
     } catch (error) {
       this.#logger.error("Conversation history load failed.", {
         channelId: request.channelId,
@@ -101,6 +113,7 @@ export class ConversationService {
       return;
     }
 
+    const systemPrompt = this.#buildSystemPromptWithContext(relevantContext);
     const userMessage: ChatMessage = { role: "user", content: request.prompt };
     const messages = [...history, userMessage];
     const writer = new LiveStreamWriter(request.transport, this.#streamOptions);
@@ -109,7 +122,7 @@ export class ConversationService {
     try {
       response = await this.#llm.stream({
         messages,
-        systemPrompt: this.#systemPrompt,
+        systemPrompt,
         onDelta: async (delta) => {
           await writer.appendDelta(delta);
         },
@@ -151,6 +164,23 @@ export class ConversationService {
     }
   }
 
+  #buildSystemPromptWithContext(relevantContext: readonly RelevantContext[]): string | undefined {
+    if (relevantContext.length === 0) {
+      return this.#systemPrompt;
+    }
+
+    const contextSnippet = relevantContext
+      .map((item) => `[과거 기록] ${item.role === "user" ? "사용자" : "어시스턴트"}: ${item.content}`)
+      .join("\n");
+
+    const contextPrompt = `[참고: 관련된 과거 채널 대화 및 지식]\n${contextSnippet}\n위 과거 대화와 지식을 필요시 자연스럽게 참고하여 답변해.`;
+
+    if (this.#systemPrompt === undefined || this.#systemPrompt.trim().length === 0) {
+      return contextPrompt;
+    }
+
+    return `${this.#systemPrompt}\n\n${contextPrompt}`;
+  }
   async #sendFailureReply(request: ConversationRequest): Promise<void> {
     try {
       await request.transport.sendFailureNotice(USER_FAILURE_MESSAGE);
@@ -164,24 +194,3 @@ export class ConversationService {
 }
 
 
-class KeyedSerialQueue {
-  readonly #tails = new Map<string, Promise<void>>();
-
-  run<T>(key: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.#tails.get(key) ?? Promise.resolve();
-    const result = previous.then(task);
-    const tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-
-    this.#tails.set(key, tail);
-    void tail.then(() => {
-      if (this.#tails.get(key) === tail) {
-        this.#tails.delete(key);
-      }
-    });
-
-    return result;
-  }
-}
