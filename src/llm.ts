@@ -335,12 +335,10 @@ function createCurlGeminiFetch(): FetchLike {
       reject(new Error("Gemini API key header is missing."));
       return;
     }
-    const target = new URL(input);
-    const resolvedIp = process.env.GEMINI_RESOLVED_IP ?? "172.217.118.4";
 
     const script = [
       "exec curl --silent --show-error --no-buffer --fail-with-body",
-      "--noproxy \"*\" --resolve \"$GEMINI_HOST:443:$GEMINI_IP\"",
+      "--noproxy \"*\"",
       "--retry 3 --retry-delay 1 --retry-all-errors --max-time 90",
       "--request POST \"$GEMINI_URL\"",
       "--header \"x-goog-api-key: $GEMINI_KEY\"",
@@ -352,8 +350,6 @@ function createCurlGeminiFetch(): FetchLike {
         ...process.env,
         GEMINI_URL: input,
         GEMINI_KEY: apiKey,
-        GEMINI_HOST: target.hostname,
-        GEMINI_IP: resolvedIp,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
