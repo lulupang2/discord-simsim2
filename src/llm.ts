@@ -122,9 +122,11 @@ export class GeminiInteractionsClient implements LlmStreamClient {
           },
           body,
         });
-      } catch {
+      } catch (error) {
         if (attempt === MAX_REQUEST_ATTEMPTS) {
-          throw new LlmProviderError("Could not reach the Gemini API.");
+          throw new LlmProviderError(
+            `Could not reach the Gemini API (${networkFailureLabel(error)}).`,
+          );
         }
         await this.#sleep(retryDelayMs(attempt));
         continue;
@@ -158,6 +160,20 @@ async function sleep(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function networkFailureLabel(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "UnknownError";
+  }
+  const cause = error.cause;
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    const code = cause.code;
+    if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) {
+      return `${error.name}:${code}`;
+    }
+  }
+  return error.name;
 }
 
 function toGeminiInput(messages: readonly ChatMessage[]): string {
