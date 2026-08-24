@@ -20,6 +20,15 @@ async function main(): Promise<void> {
 
   console.log("Fetching conversation statistics...");
   const stats = await store.getStatistics();
+  const formatTime = (t: unknown): string => {
+    if (!t) return "없음";
+    try {
+      return new Date(t as string | number | Date).toISOString();
+    } catch {
+      return String(t);
+    }
+  };
+
   console.log("=========================================");
   console.log("📊 Neon DB 대화 데이터셋 통계");
   console.log("=========================================");
@@ -27,8 +36,8 @@ async function main(): Promise<void> {
   console.log(`- 사용자 질문: ${stats.userMessages.toLocaleString()} 건`);
   console.log(`- 봇 답변: ${stats.assistantMessages.toLocaleString()} 건`);
   console.log(`- 참여 채널 수: ${stats.channelCount.toLocaleString()} 개`);
-  console.log(`- 최초 대화: ${stats.earliestMessage ? stats.earliestMessage.toISOString() : "없음"}`);
-  console.log(`- 최근 대화: ${stats.latestMessage ? stats.latestMessage.toISOString() : "없음"}`);
+  console.log(`- 최초 대화: ${formatTime(stats.earliestMessage)}`);
+  console.log(`- 최근 대화: ${formatTime(stats.latestMessage)}`);
   console.log("=========================================");
 
   console.log("Exporting fine-tuning dataset (JSONL format)...");

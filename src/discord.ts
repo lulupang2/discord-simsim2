@@ -32,8 +32,8 @@ export function attachDiscordMessageHandler(
           `사용자 질문: ${stats.userMessages.toLocaleString()} 건`,
           `어시스턴트 답변: ${stats.assistantMessages.toLocaleString()} 건`,
           `활성 채널 수: ${stats.channelCount.toLocaleString()} 개`,
-          `최초 대화 일시: ${stats.earliestMessage ? stats.earliestMessage.toLocaleString("ko-KR") : "없음"}`,
-          `최근 대화 일시: ${stats.latestMessage ? stats.latestMessage.toLocaleString("ko-KR") : "없음"}`,
+          `최초 대화 일시: ${stats.earliestMessage ? new Date(stats.earliestMessage as string | number | Date).toLocaleString("ko-KR") : "없음"}`,
+          `최근 대화 일시: ${stats.latestMessage ? new Date(stats.latestMessage as string | number | Date).toLocaleString("ko-KR") : "없음"}`,
           "```",
           "💡 `npm run export-dataset` 명령어로 OpenAI/Qwen 파인튜닝용 JSONL을 추출할 수 있습니다.",
         ].join("\n");
