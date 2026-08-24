@@ -360,7 +360,10 @@ function createCurlGeminiFetch(): FetchLike {
       child.kill();
       return;
     }
-    child.stderr?.resume();
+    const stderrChunks: Buffer[] = [];
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    });
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -374,7 +377,10 @@ function createCurlGeminiFetch(): FetchLike {
           if (code === 0) {
             controller.close();
           } else {
-            controller.error(new Error(`curl exited with code ${code ?? -1}.`));
+            const detail = safeCurlError(Buffer.concat(stderrChunks).toString("utf8"));
+            controller.error(
+              new Error(`curl exited with code ${code ?? -1}: ${detail}`),
+            );
           }
         });
       },
@@ -398,6 +404,13 @@ function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number
     return Math.min(retryAfterSeconds * 1_000, 10_000);
   }
   return Math.min(RETRY_BASE_DELAY_MS * (2 ** (attempt - 1)), 10_000);
+}
+
+function safeCurlError(value: string): string {
+  return value
+    .replace(/(x-goog-api-key:\s*)\S+/gi, "$1[REDACTED]")
+    .trim()
+    .slice(0, 300);
 }
 
 async function sleep(milliseconds: number): Promise<void> {
