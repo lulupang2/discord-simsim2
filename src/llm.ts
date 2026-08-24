@@ -6,7 +6,7 @@ export interface ChatMessage {
   readonly content: string;
 }
 
-export interface GeminiContentTurn {
+export interface GeminiContentItem {
   readonly role: "user" | "model";
   readonly parts: readonly { readonly text: string }[];
 }
@@ -47,25 +47,33 @@ export class GeminiInteractionsClient implements LlmStreamClient {
     this.#apiKey = options.apiKey;
     this.#model = options.model;
     this.#thinkingLevel = options.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
-    const base = (options.baseUrl ?? DEFAULT_GEMINI_BASE_URL).replace(/\/+$/, "");
-    this.#endpoint = `${base}/v1beta/interactions?alt=sse`;
+    
+    // Normalize base URL: strip trailing slashes, /v1beta/openai, /v1, etc.
+    let base = (options.baseUrl ?? DEFAULT_GEMINI_BASE_URL).trim().replace(/\/+$/, "");
+    base = base.replace(/\/v1beta\/openai$/i, "").replace(/\/openai$/i, "").replace(/\/v1$/i, "").replace(/\/+$/, "");
+    if (!base.startsWith("http://") && !base.startsWith("https://")) {
+      base = DEFAULT_GEMINI_BASE_URL;
+    }
+
+    this.#endpoint = `${base}/v1beta/models/${encodeURIComponent(this.#model)}:streamGenerateContent?alt=sse`;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {
-    const input = toGeminiInput(request.messages);
+    const contents = toGeminiContents(request.messages);
     const body: Record<string, unknown> = {
-      model: this.#model,
-      input,
-      stream: true,
-      store: false,
-      generation_config: {
-        thinking_level: this.#thinkingLevel,
+      contents,
+      generationConfig: {
+        thinkingConfig: {
+          thinkingLevel: this.#thinkingLevel,
+        },
       },
     };
 
     if (request.systemPrompt !== undefined && request.systemPrompt.trim().length > 0) {
-      body.system_instruction = request.systemPrompt;
+      body.systemInstruction = {
+        parts: [{ text: request.systemPrompt }],
+      };
     }
 
     let response: Response;
@@ -103,6 +111,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
       const message = error instanceof Error ? error.message : "Unknown error";
       throw new LlmProviderError(`The Gemini stream encountered an unexpected error: ${message}`);
     }
+
     if (assembled.trim().length === 0) {
       throw new LlmProviderError("The Gemini API returned no text response.");
     }
@@ -111,7 +120,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   }
 }
 
-function toGeminiInput(messages: readonly ChatMessage[]): GeminiContentTurn[] {
+function toGeminiContents(messages: readonly ChatMessage[]): GeminiContentItem[] {
   return messages.map((entry) => ({
     role: entry.role === "assistant" ? "model" : "user",
     parts: [{ text: entry.content }],
@@ -171,6 +180,7 @@ function extractTextDeltaFromEventBlock(block: string): string | undefined {
   if (dataLines.length === 0) {
     return undefined;
   }
+
   const rawData = dataLines.join("\n");
   if (rawData === "[DONE]") {
     return undefined;
@@ -191,6 +201,29 @@ function extractTextDeltaFromEventBlock(block: string): string | undefined {
     throw new LlmProviderError("The Gemini stream reported an error event.");
   }
 
+  // 1. Google streamGenerateContent format: candidates[0].content.parts[0].text
+  if ("candidates" in payload && Array.isArray(payload.candidates) && payload.candidates.length > 0) {
+    const candidate: unknown = payload.candidates[0];
+    if (typeof candidate === "object" && candidate !== null && "content" in candidate) {
+      const content: unknown = candidate.content;
+      if (typeof content === "object" && content !== null && "parts" in content && Array.isArray(content.parts)) {
+        let candidateText = "";
+        for (const part of content.parts) {
+          if (typeof part === "object" && part !== null && "text" in part && typeof part.text === "string") {
+            // Exclude thought text if marked as thought
+            if (!("thought" in part && part.thought === true)) {
+              candidateText += part.text;
+            }
+          }
+        }
+        if (candidateText.length > 0) {
+          return candidateText;
+        }
+      }
+    }
+  }
+
+  // 2. Interactions step.delta format fallback
   let payloadEventType = eventType;
   if ("event_type" in payload && typeof payload.event_type === "string") {
     payloadEventType = payload.event_type;
