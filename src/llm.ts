@@ -1,23 +1,31 @@
 export type ChatRole = "user" | "assistant";
+export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
 
 export interface ChatMessage {
   readonly role: ChatRole;
   readonly content: string;
 }
 
-export interface ChatCompletionRequest {
+export interface GeminiContentTurn {
+  readonly role: "user" | "model";
+  readonly parts: readonly { readonly text: string }[];
+}
+
+export interface StreamCompletionRequest {
   readonly messages: readonly ChatMessage[];
   readonly systemPrompt: string | undefined;
+  readonly onDelta: (text: string) => Promise<void> | void;
 }
 
-export interface ChatCompletionClient {
-  complete(request: ChatCompletionRequest): Promise<string>;
+export interface LlmStreamClient {
+  stream(request: StreamCompletionRequest): Promise<string>;
 }
 
-export interface OpenAICompatibleClientOptions {
+export interface GeminiInteractionsClientOptions {
   readonly apiKey: string;
   readonly model: string;
-  readonly baseUrl: string;
+  readonly thinkingLevel?: GeminiThinkingLevel;
+  readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -25,83 +33,182 @@ export class LlmProviderError extends Error {
   override readonly name = "LlmProviderError";
 }
 
-export class OpenAICompatibleClient implements ChatCompletionClient {
+const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+const DEFAULT_THINKING_LEVEL: GeminiThinkingLevel = "low";
+
+export class GeminiInteractionsClient implements LlmStreamClient {
   readonly #apiKey: string;
   readonly #model: string;
+  readonly #thinkingLevel: GeminiThinkingLevel;
   readonly #endpoint: string;
   readonly #fetch: typeof fetch;
 
-  constructor(options: OpenAICompatibleClientOptions) {
+  constructor(options: GeminiInteractionsClientOptions) {
     this.#apiKey = options.apiKey;
     this.#model = options.model;
-    this.#endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    this.#thinkingLevel = options.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+    const base = (options.baseUrl ?? DEFAULT_GEMINI_BASE_URL).replace(/\/+$/, "");
+    this.#endpoint = `${base}/v1beta/interactions?alt=sse`;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
   }
 
-  async complete(request: ChatCompletionRequest): Promise<string> {
-    const messages = request.systemPrompt === undefined
-      ? request.messages
-      : [{ role: "system" as const, content: request.systemPrompt }, ...request.messages];
+  async stream(request: StreamCompletionRequest): Promise<string> {
+    const input = toGeminiInput(request.messages);
+    const body: Record<string, unknown> = {
+      model: this.#model,
+      input,
+      stream: true,
+      store: false,
+      generation_config: {
+        thinking_level: this.#thinkingLevel,
+      },
+    };
+
+    if (request.systemPrompt !== undefined && request.systemPrompt.trim().length > 0) {
+      body.system_instruction = request.systemPrompt;
+    }
 
     let response: Response;
     try {
       response = await this.#fetch(this.#endpoint, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.#apiKey}`,
+          "x-goog-api-key": this.#apiKey,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          model: this.#model,
-          messages,
-        }),
+        body: JSON.stringify(body),
       });
     } catch {
-      throw new LlmProviderError("Could not reach the LLM provider.");
+      throw new LlmProviderError("Could not reach the Gemini API.");
     }
 
     if (!response.ok) {
-      throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
+      throw new LlmProviderError(`The Gemini API returned HTTP ${response.status}.`);
     }
 
-    let payload: unknown;
+    if (response.body === null) {
+      throw new LlmProviderError("The Gemini API returned an empty response body.");
+    }
+
+    let assembled = "";
     try {
-      payload = await response.json();
-    } catch {
-      throw new LlmProviderError("The LLM provider returned invalid JSON.");
+      for await (const deltaText of parseGeminiEventStream(response.body)) {
+        assembled += deltaText;
+        await request.onDelta(deltaText);
+      }
+    } catch (error) {
+      if (error instanceof LlmProviderError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : "Unknown error";
+      throw new LlmProviderError(`The Gemini stream encountered an unexpected error: ${message}`);
+    }
+    if (assembled.trim().length === 0) {
+      throw new LlmProviderError("The Gemini API returned no text response.");
     }
 
-    const content = readCompletionContent(payload);
-    if (content === undefined || content.trim().length === 0) {
-      throw new LlmProviderError("The LLM provider returned no text response.");
-    }
-
-    return content;
+    return assembled;
   }
 }
 
-function readCompletionContent(payload: unknown): string | undefined {
-  if (typeof payload !== "object" || payload === null || !("choices" in payload)) {
+function toGeminiInput(messages: readonly ChatMessage[]): GeminiContentTurn[] {
+  return messages.map((entry) => ({
+    role: entry.role === "assistant" ? "model" : "user",
+    parts: [{ text: entry.content }],
+  }));
+}
+
+async function* parseGeminiEventStream(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<string, void, unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+
+      for (const block of blocks) {
+        const delta = extractTextDeltaFromEventBlock(block);
+        if (delta !== undefined && delta.length > 0) {
+          yield delta;
+        }
+      }
+    }
+
+    if (buffer.trim().length > 0) {
+      const delta = extractTextDeltaFromEventBlock(buffer);
+      if (delta !== undefined && delta.length > 0) {
+        yield delta;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function extractTextDeltaFromEventBlock(block: string): string | undefined {
+  const lines = block.split(/\r?\n/);
+  let eventType: string | undefined;
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return undefined;
+  }
+  const rawData = dataLines.join("\n");
+  if (rawData === "[DONE]") {
     return undefined;
   }
 
-  const choices = payload.choices;
-  if (!Array.isArray(choices) || choices.length === 0) {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawData);
+  } catch {
     return undefined;
   }
 
-  const firstChoice: unknown = choices[0];
-  if (
-    typeof firstChoice !== "object" ||
-    firstChoice === null ||
-    !("message" in firstChoice) ||
-    typeof firstChoice.message !== "object" ||
-    firstChoice.message === null ||
-    !("content" in firstChoice.message) ||
-    typeof firstChoice.message.content !== "string"
-  ) {
+  if (typeof payload !== "object" || payload === null) {
     return undefined;
   }
 
-  return firstChoice.message.content;
+  if ("error" in payload) {
+    throw new LlmProviderError("The Gemini stream reported an error event.");
+  }
+
+  let payloadEventType = eventType;
+  if ("event_type" in payload && typeof payload.event_type === "string") {
+    payloadEventType = payload.event_type;
+  }
+
+  if (payloadEventType === "step.delta" && "delta" in payload) {
+    const delta = payload.delta;
+    if (
+      typeof delta === "object" &&
+      delta !== null &&
+      "type" in delta &&
+      delta.type === "text" &&
+      "text" in delta &&
+      typeof delta.text === "string"
+    ) {
+      return delta.text;
+    }
+  }
+
+  return undefined;
 }

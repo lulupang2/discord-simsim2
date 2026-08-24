@@ -1,13 +1,16 @@
-import { splitDiscordMessage } from "./chunking.js";
-import type { ChatCompletionClient, ChatMessage } from "./llm.js";
+import type { ChatMessage, LlmStreamClient } from "./llm.js";
 import { consoleLogger, summarizeError, type Logger } from "./logging.js";
+import {
+  LiveStreamWriter,
+  type LiveStreamWriterOptions,
+  type StreamableChannelTransport,
+} from "./stream-writer.js";
 
 export const USER_FAILURE_MESSAGE =
   "Sorry, I couldn't generate a response right now. Please try again.";
 
-export interface ConversationTransport {
-  sendTyping(): Promise<void>;
-  sendMessage(content: string): Promise<void>;
+export interface ConversationTransport extends StreamableChannelTransport {
+  sendFailureNotice(content: string): Promise<void>;
 }
 
 export interface ConversationRequest {
@@ -37,18 +40,19 @@ export interface ConversationServiceOptions {
   readonly maxHistoryMessages: number;
   readonly systemPrompt: string | undefined;
   readonly store: ConversationStore;
+  readonly streamOptions?: LiveStreamWriterOptions;
   readonly logger?: Logger;
 }
-
 export class ConversationService {
-  readonly #llm: ChatCompletionClient;
+  readonly #llm: LlmStreamClient;
   readonly #maxHistoryMessages: number;
   readonly #systemPrompt: string | undefined;
   readonly #store: ConversationStore;
+  readonly #streamOptions: LiveStreamWriterOptions | undefined;
   readonly #logger: Logger;
   readonly #queue = new KeyedSerialQueue();
 
-  constructor(llm: ChatCompletionClient, options: ConversationServiceOptions) {
+  constructor(llm: LlmStreamClient, options: ConversationServiceOptions) {
     if (!Number.isSafeInteger(options.maxHistoryMessages) || options.maxHistoryMessages <= 0) {
       throw new RangeError("maxHistoryMessages must be a positive integer.");
     }
@@ -57,6 +61,7 @@ export class ConversationService {
     this.#maxHistoryMessages = options.maxHistoryMessages;
     this.#systemPrompt = options.systemPrompt;
     this.#store = options.store;
+    this.#streamOptions = options.streamOptions;
     this.#logger = options.logger ?? consoleLogger;
   }
 
@@ -98,15 +103,19 @@ export class ConversationService {
 
     const userMessage: ChatMessage = { role: "user", content: request.prompt };
     const messages = [...history, userMessage];
+    const writer = new LiveStreamWriter(request.transport, this.#streamOptions);
 
     let response: string;
     try {
-      response = await this.#llm.complete({
+      response = await this.#llm.stream({
         messages,
         systemPrompt: this.#systemPrompt,
+        onDelta: async (delta) => {
+          await writer.appendDelta(delta);
+        },
       });
     } catch (error) {
-      this.#logger.error("LLM completion failed.", {
+      this.#logger.error("Gemini stream completion failed.", {
         channelId: request.channelId,
         error: summarizeError(error),
       });
@@ -114,28 +123,15 @@ export class ConversationService {
       return;
     }
 
-    const chunks = splitDiscordMessage(response);
-    if (chunks.length === 0) {
-      this.#logger.error("LLM completion contained no sendable text.", {
+    try {
+      await writer.finish();
+    } catch (error) {
+      this.#logger.error("Discord stream delivery failed.", {
         channelId: request.channelId,
+        error: summarizeError(error),
       });
       await this.#sendFailureReply(request);
       return;
-    }
-
-    for (const [chunkIndex, chunk] of chunks.entries()) {
-      try {
-        await request.transport.sendMessage(chunk);
-      } catch (error) {
-        this.#logger.error("Discord response send failed.", {
-          channelId: request.channelId,
-          chunkNumber: chunkIndex + 1,
-          chunkCount: chunks.length,
-          error: summarizeError(error),
-        });
-        await this.#sendFailureReply(request);
-        return;
-      }
     }
 
     try {
@@ -157,7 +153,7 @@ export class ConversationService {
 
   async #sendFailureReply(request: ConversationRequest): Promise<void> {
     try {
-      await request.transport.sendMessage(USER_FAILURE_MESSAGE);
+      await request.transport.sendFailureNotice(USER_FAILURE_MESSAGE);
     } catch (error) {
       this.#logger.error("Discord failure reply could not be sent.", {
         channelId: request.channelId,
@@ -166,6 +162,7 @@ export class ConversationService {
     }
   }
 }
+
 
 class KeyedSerialQueue {
   readonly #tails = new Map<string, Promise<void>>();

@@ -1,11 +1,16 @@
-const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
+import type { GeminiThinkingLevel } from "./llm.js";
+
+const DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com";
+const DEFAULT_LLM_MODEL = "gemini-3.7-flash";
 const DEFAULT_MAX_HISTORY_MESSAGES = 20;
+const DEFAULT_THINKING_LEVEL: GeminiThinkingLevel = "low";
 
 export interface BotConfig {
   readonly discordToken: string;
   readonly llmApiKey: string;
   readonly llmModel: string;
   readonly llmBaseUrl: string;
+  readonly thinkingLevel: GeminiThinkingLevel;
   readonly databaseUrl: string;
   readonly systemPrompt: string | undefined;
   readonly maxHistoryMessages: number;
@@ -18,19 +23,20 @@ export class ConfigurationError extends Error {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const errors: string[] = [];
   const discordToken = readRequired(env, "DISCORD_TOKEN", errors);
-  const llmApiKey = readRequired(env, "LLM_API_KEY", errors);
-  const llmModel = readRequired(env, "LLM_MODEL", errors);
-  const llmBaseUrl = readBaseUrl(env.LLM_BASE_URL, errors);
+  const llmApiKey = readLlmApiKey(env, errors);
+  const llmModel = readLlmModel(env, errors);
+  const llmBaseUrl = readBaseUrl(env.LLM_BASE_URL ?? env.GEMINI_BASE_URL, errors);
+  const thinkingLevel = readThinkingLevel(env.LLM_THINKING_LEVEL ?? env.GEMINI_THINKING_LEVEL, errors);
   const databaseUrl = readDatabaseUrl(env.DATABASE_URL, errors);
   const maxHistoryMessages = readMaxHistory(env.MAX_HISTORY_MESSAGES, errors);
   const systemPrompt = readSystemPrompt(env.BOT_SYSTEM_PROMPT);
-
   if (
     errors.length > 0 ||
     discordToken === undefined ||
     llmApiKey === undefined ||
     llmModel === undefined ||
     llmBaseUrl === undefined ||
+    thinkingLevel === undefined ||
     databaseUrl === undefined ||
     maxHistoryMessages === undefined
   ) {
@@ -44,6 +50,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     llmApiKey,
     llmModel,
     llmBaseUrl,
+    thinkingLevel,
     databaseUrl,
     systemPrompt,
     maxHistoryMessages,
@@ -62,6 +69,41 @@ function readRequired(
   }
 
   return value;
+}
+
+function readLlmApiKey(env: NodeJS.ProcessEnv, errors: string[]): string | undefined {
+  const value = (env.LLM_API_KEY ?? env.GEMINI_API_KEY)?.trim();
+  if (value === undefined || value.length === 0) {
+    errors.push("LLM_API_KEY is required and must not be blank.");
+    return undefined;
+  }
+  return value;
+}
+
+function readLlmModel(env: NodeJS.ProcessEnv, errors: string[]): string | undefined {
+  const value = (env.LLM_MODEL ?? env.GEMINI_MODEL)?.trim();
+  if (value === undefined || value.length === 0) {
+    errors.push("LLM_MODEL is required and must not be blank.");
+    return undefined;
+  }
+  return value;
+}
+
+function readThinkingLevel(
+  rawValue: string | undefined,
+  errors: string[],
+): GeminiThinkingLevel | undefined {
+  const value = rawValue?.trim().toLowerCase();
+  if (value === undefined || value.length === 0) {
+    return DEFAULT_THINKING_LEVEL;
+  }
+
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+
+  errors.push("LLM_THINKING_LEVEL must be one of: minimal, low, medium, high.");
+  return undefined;
 }
 
 function readDatabaseUrl(

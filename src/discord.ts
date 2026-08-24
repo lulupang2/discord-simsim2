@@ -53,7 +53,27 @@ function createTransport(channel: SendableChannels): ConversationTransport {
     async sendTyping(): Promise<void> {
       await channel.sendTyping();
     },
-    async sendMessage(content: string): Promise<void> {
+    async sendInitial(content: string) {
+      const message = await channel.send({
+        content,
+        allowedMentions: { parse: [] },
+      });
+      return {
+        async edit(updatedContent: string): Promise<void> {
+          await message.edit({
+            content: updatedContent,
+            allowedMentions: { parse: [] },
+          });
+        },
+      };
+    },
+    async sendFinalChunk(content: string): Promise<void> {
+      await channel.send({
+        content,
+        allowedMentions: { parse: [] },
+      });
+    },
+    async sendFailureNotice(content: string): Promise<void> {
       await channel.send({
         content,
         allowedMentions: { parse: [] },

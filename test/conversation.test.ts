@@ -8,32 +8,39 @@ import {
   type ConversationTransport,
 } from "../src/conversation.js";
 import type {
-  ChatCompletionClient,
-  ChatCompletionRequest,
   ChatMessage,
+  LlmStreamClient,
+  StreamCompletionRequest,
 } from "../src/llm.js";
 import type { Logger } from "../src/logging.js";
+import type {
+  StreamableChannelTransport,
+  StreamableMessageHandle,
+} from "../src/stream-writer.js";
 
 type CompletionBehavior = (
-  request: ChatCompletionRequest,
+  request: StreamCompletionRequest,
   callIndex: number,
 ) => Promise<string>;
 
-class RecordingClient implements ChatCompletionClient {
-  readonly requests: ChatCompletionRequest[] = [];
+class RecordingClient implements LlmStreamClient {
+  readonly requests: StreamCompletionRequest[] = [];
   readonly #behavior: CompletionBehavior;
 
   constructor(behavior: CompletionBehavior) {
     this.#behavior = behavior;
   }
 
-  async complete(request: ChatCompletionRequest): Promise<string> {
-    const snapshot: ChatCompletionRequest = {
+  async stream(request: StreamCompletionRequest): Promise<string> {
+    const snapshot: StreamCompletionRequest = {
       messages: request.messages.map((entry) => ({ ...entry })),
       systemPrompt: request.systemPrompt,
+      onDelta: request.onDelta,
     };
     this.requests.push(snapshot);
-    return this.#behavior(snapshot, this.requests.length - 1);
+    const result = await this.#behavior(snapshot, this.requests.length - 1);
+    await request.onDelta(result);
+    return result;
   }
 }
 
@@ -74,10 +81,12 @@ class RecordingStore implements ConversationStore {
   }
 }
 
-class RecordingTransport implements ConversationTransport {
+class RecordingTransport implements ConversationTransport, StreamableChannelTransport {
   typingCount = 0;
-  readonly attemptedMessages: string[] = [];
-  readonly sentMessages: string[] = [];
+  readonly initialSends: string[] = [];
+  readonly edits: string[] = [];
+  readonly finalChunks: string[] = [];
+  readonly failureNotices: string[] = [];
   readonly #typingHook: (() => Promise<void>) | undefined;
   readonly #sendHook: ((content: string) => Promise<void>) | undefined;
 
@@ -94,10 +103,24 @@ class RecordingTransport implements ConversationTransport {
     await this.#typingHook?.();
   }
 
-  async sendMessage(content: string): Promise<void> {
-    this.attemptedMessages.push(content);
+  async sendInitial(content: string): Promise<StreamableMessageHandle> {
     await this.#sendHook?.(content);
-    this.sentMessages.push(content);
+    this.initialSends.push(content);
+    return {
+      edit: async (updatedContent: string) => {
+        await this.#sendHook?.(updatedContent);
+        this.edits.push(updatedContent);
+      },
+    };
+  }
+
+  async sendFinalChunk(content: string): Promise<void> {
+    await this.#sendHook?.(content);
+    this.finalChunks.push(content);
+  }
+
+  async sendFailureNotice(content: string): Promise<void> {
+    this.failureNotices.push(content);
   }
 }
 
@@ -166,8 +189,8 @@ describe("ConversationService", () => {
     ]);
     expect(store.getAll("A")).toHaveLength(6);
     expect(store.getAll("B")).toHaveLength(2);
-    expect(channelA.sentMessages).toEqual(["answer-1", "answer-2", "answer-4"]);
-    expect(channelB.sentMessages).toEqual(["answer-3"]);
+    expect(channelA.initialSends).toEqual(["answer-1", "answer-2", "answer-4"]);
+    expect(channelB.initialSends).toEqual(["answer-3"]);
   });
 
   it("sends a failure reply and does not persist a failed LLM turn", async () => {
@@ -189,7 +212,8 @@ describe("ConversationService", () => {
     await service.handle(request("channel", "failed prompt", transport));
     await service.handle(request("channel", "next prompt", transport));
 
-    expect(transport.sentMessages).toEqual([USER_FAILURE_MESSAGE, "recovered"]);
+    expect(transport.failureNotices).toEqual([USER_FAILURE_MESSAGE]);
+    expect(transport.initialSends).toEqual(["recovered"]);
     expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
     expect(store.exchanges).toHaveLength(1);
   });
@@ -217,7 +241,7 @@ describe("ConversationService", () => {
     const healthyTransport = new RecordingTransport();
     await service.handle(request("channel", "next prompt", healthyTransport));
 
-    expect(failingTransport.attemptedMessages).toEqual(["answer-1", USER_FAILURE_MESSAGE]);
+    expect(failingTransport.failureNotices).toEqual([USER_FAILURE_MESSAGE]);
     expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
     expect(store.exchanges).toHaveLength(1);
   });
@@ -239,7 +263,7 @@ describe("ConversationService", () => {
     await service.handle(request("channel", "prompt", transport));
 
     expect(transport.typingCount).toBe(1);
-    expect(transport.sentMessages).toEqual(["answer"]);
+    expect(transport.initialSends).toEqual(["answer"]);
   });
 
   it("serializes overlapping requests and observes the preceding database write", async () => {
@@ -287,7 +311,7 @@ describe("ConversationService", () => {
     await Promise.all([first, second]);
 
     expect(maximumActiveCalls).toBe(1);
-    expect(transport.sentMessages).toEqual(["first reply", "second reply"]);
+    expect(transport.initialSends).toEqual(["first reply", "second reply"]);
     expect(llm.requests[1]?.messages).toEqual([
       message("user", "first prompt"),
       message("assistant", "first reply"),
@@ -309,7 +333,7 @@ describe("ConversationService", () => {
     await service.handle(request("channel", "prompt", transport));
 
     expect(llm.requests).toHaveLength(0);
-    expect(transport.sentMessages).toEqual([USER_FAILURE_MESSAGE]);
+    expect(transport.failureNotices).toEqual([USER_FAILURE_MESSAGE]);
     expect(logger.error).toHaveBeenCalledWith(
       "Conversation history load failed.",
       expect.objectContaining({ channelId: "channel" }),
@@ -329,7 +353,7 @@ describe("ConversationService", () => {
 
     await service.handle(request("channel", "prompt", transport));
 
-    expect(transport.sentMessages).toEqual(["answer"]);
+    expect(transport.initialSends).toEqual(["answer"]);
     expect(logger.error).toHaveBeenCalledWith(
       "Conversation history persistence failed.",
       expect.objectContaining({ channelId: "channel" }),
