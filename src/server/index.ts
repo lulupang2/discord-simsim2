@@ -36,14 +36,12 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       }),
     )
     // 1. Dashboard UI
-    .get("/", ({ set }) => {
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      return getDashboardHtml();
-    })
-    .get("/admin", ({ set }) => {
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      return getDashboardHtml();
-    })
+    .get("/", () => new Response(getDashboardHtml(), {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }))
+    .get("/admin", () => new Response(getDashboardHtml(), {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }))
 
     // 2. Health check
     .get("/health", () => ({

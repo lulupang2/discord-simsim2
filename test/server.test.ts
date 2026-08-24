@@ -79,6 +79,7 @@ describe("Elysia Admin Server", () => {
   it("serves HTML dashboard on /", async () => {
     const res = await app.handle(new Request("http://localhost/"));
     expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
     const html = await res.text();
     expect(html).toContain("GuideDog Admin");
     expect(html).toContain("안내견");
