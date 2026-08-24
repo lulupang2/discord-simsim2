@@ -1,5 +1,14 @@
+import { Resolver } from "node:dns";
+import { request as httpsRequest } from "node:https";
+import type { LookupFunction } from "node:net";
+
 export type ChatRole = "user" | "assistant";
 export type GeminiThinkingLevel = "minimal" | "low" | "medium" | "high";
+
+export type FetchLike = (
+  input: string,
+  init: RequestInit,
+) => Promise<Response>;
 
 export interface ChatMessage {
   readonly role: ChatRole;
@@ -22,7 +31,7 @@ export interface GeminiInteractionsClientOptions {
   readonly model: string;
   readonly thinkingLevel?: GeminiThinkingLevel;
   readonly baseUrl?: string;
-  readonly fetchImpl?: typeof fetch;
+  readonly fetchImpl?: FetchLike;
   readonly sleepImpl?: (milliseconds: number) => Promise<void>;
 }
 
@@ -40,7 +49,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   readonly #model: string;
   readonly #thinkingLevel: GeminiThinkingLevel;
   readonly #endpoint: string;
-  readonly #fetch: typeof fetch;
+  readonly #fetch: FetchLike;
   readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: GeminiInteractionsClientOptions) {
@@ -59,7 +68,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
     }
 
     this.#endpoint = `${base}/v1beta/interactions?alt=sse`;
-    this.#fetch = options.fetchImpl ?? globalThis.fetch;
+    this.#fetch = options.fetchImpl ?? createGeminiFetch();
     this.#sleep = options.sleepImpl ?? sleep;
   }
 
@@ -147,6 +156,78 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   }
 }
 
+
+const publicDnsResolver = new Resolver();
+publicDnsResolver.setServers(["1.1.1.1", "8.8.8.8"]);
+
+const lookupWithPublicDns: LookupFunction = (hostname, options, callback): void => {
+  publicDnsResolver.resolve4(hostname, (error, addresses) => {
+    const address = addresses[0];
+    if (error !== null || address === undefined) {
+      callback(error ?? new Error(`No IPv4 address found for ${hostname}.`), "", 4);
+      return;
+    }
+    if (options.all) {
+      callback(null, [{ address, family: 4 }]);
+      return;
+    }
+    callback(null, address, 4);
+  });
+};
+
+function createGeminiFetch(): FetchLike {
+  return async (input, init) => new Promise<Response>((resolve, reject) => {
+    const requestHeaders = Object.fromEntries(new Headers(init.headers).entries());
+    const request = httpsRequest(input, {
+      method: init.method ?? "GET",
+      headers: requestHeaders,
+      lookup: lookupWithPublicDns,
+    }, (response) => {
+      const responseHeaders = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            responseHeaders.append(name, item);
+          }
+        } else if (value !== undefined) {
+          responseHeaders.set(name, value);
+        }
+      }
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          response.on("data", (chunk: Buffer) => {
+            controller.enqueue(chunk);
+          });
+          response.once("end", () => {
+            controller.close();
+          });
+          response.once("error", (error) => {
+            controller.error(error);
+          });
+        },
+        cancel() {
+          response.destroy();
+        },
+      });
+
+      resolve(new Response(stream, {
+        status: response.statusCode ?? 500,
+        headers: responseHeaders,
+      }));
+    });
+
+    request.once("error", reject);
+    request.setTimeout(60_000, () => {
+      request.destroy(new Error("Gemini request timed out."));
+    });
+
+    if (typeof init.body === "string") {
+      request.write(init.body);
+    }
+    request.end();
+  });
+}
 
 function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
   const retryAfterSeconds = Number(retryAfterHeader);
