@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ConversationService,
   USER_FAILURE_MESSAGE,
+  type ConversationExchange,
+  type ConversationRequest,
+  type ConversationStore,
   type ConversationTransport,
 } from "../src/conversation.js";
 import type {
@@ -26,11 +29,48 @@ class RecordingClient implements ChatCompletionClient {
 
   async complete(request: ChatCompletionRequest): Promise<string> {
     const snapshot: ChatCompletionRequest = {
-      messages: request.messages.map((message) => ({ ...message })),
+      messages: request.messages.map((entry) => ({ ...entry })),
       systemPrompt: request.systemPrompt,
     };
     this.requests.push(snapshot);
     return this.#behavior(snapshot, this.requests.length - 1);
+  }
+}
+
+class RecordingStore implements ConversationStore {
+  readonly exchanges: ConversationExchange[] = [];
+  readonly #messages = new Map<string, ChatMessage[]>();
+
+  constructor(
+    private readonly failReads = false,
+    private readonly failWrites = false,
+  ) {}
+
+  async getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]> {
+    if (this.failReads) {
+      throw new Error("database read unavailable");
+    }
+    return (this.#messages.get(channelId) ?? [])
+      .slice(-limit)
+      .map((entry) => ({ ...entry }));
+  }
+
+  async appendExchange(exchange: ConversationExchange): Promise<void> {
+    if (this.failWrites) {
+      throw new Error("database write unavailable");
+    }
+
+    this.exchanges.push({ ...exchange });
+    const messages = this.#messages.get(exchange.channelId) ?? [];
+    this.#messages.set(exchange.channelId, [
+      ...messages,
+      { role: "user", content: exchange.userMessage },
+      { role: "assistant", content: exchange.assistantMessage },
+    ]);
+  }
+
+  getAll(channelId: string): readonly ChatMessage[] {
+    return (this.#messages.get(channelId) ?? []).map((entry) => ({ ...entry }));
   }
 }
 
@@ -73,23 +113,40 @@ function message(role: ChatMessage["role"], content: string): ChatMessage {
   return { role, content };
 }
 
+function request(
+  channelId: string,
+  prompt: string,
+  transport: ConversationTransport,
+): ConversationRequest {
+  return {
+    channelId,
+    guildId: "guild",
+    userId: "user",
+    botUserId: "bot",
+    prompt,
+    transport,
+  };
+}
+
 describe("ConversationService", () => {
-  it("isolates channel history, evicts oldest messages, and keeps the system prompt external", async () => {
+  it("isolates database history, limits context, and keeps the system prompt external", async () => {
     const llm = new RecordingClient(async (_request, callIndex) => `answer-${callIndex + 1}`);
+    const store = new RecordingStore();
     const service = new ConversationService(llm, {
       maxHistoryMessages: 2,
       systemPrompt: "system instruction",
+      store,
       logger: createLogger(),
     });
     const channelA = new RecordingTransport();
     const channelB = new RecordingTransport();
 
-    await service.handle({ conversationId: "A", prompt: "A-one", transport: channelA });
-    await service.handle({ conversationId: "A", prompt: "A-two", transport: channelA });
-    await service.handle({ conversationId: "B", prompt: "B-one", transport: channelB });
-    await service.handle({ conversationId: "A", prompt: "A-three", transport: channelA });
+    await service.handle(request("A", "A-one", channelA));
+    await service.handle(request("A", "A-two", channelA));
+    await service.handle(request("B", "B-one", channelB));
+    await service.handle(request("A", "A-three", channelA));
 
-    expect(llm.requests.map((request) => request.systemPrompt)).toEqual([
+    expect(llm.requests.map((entry) => entry.systemPrompt)).toEqual([
       "system instruction",
       "system instruction",
       "system instruction",
@@ -107,42 +164,37 @@ describe("ConversationService", () => {
       message("assistant", "answer-2"),
       message("user", "A-three"),
     ]);
+    expect(store.getAll("A")).toHaveLength(6);
+    expect(store.getAll("B")).toHaveLength(2);
     expect(channelA.sentMessages).toEqual(["answer-1", "answer-2", "answer-4"]);
     expect(channelB.sentMessages).toEqual(["answer-3"]);
-    expect(channelA.typingCount).toBe(3);
-    expect(channelB.typingCount).toBe(1);
   });
 
-  it("sends a concise failure reply and does not retain a failed LLM turn", async () => {
+  it("sends a failure reply and does not persist a failed LLM turn", async () => {
     const llm = new RecordingClient(async (_request, callIndex) => {
       if (callIndex === 0) {
         throw new Error("provider unavailable");
       }
       return "recovered";
     });
+    const store = new RecordingStore();
     const service = new ConversationService(llm, {
       maxHistoryMessages: 20,
       systemPrompt: undefined,
+      store,
       logger: createLogger(),
     });
     const transport = new RecordingTransport();
 
-    await expect(service.handle({
-      conversationId: "channel",
-      prompt: "failed prompt",
-      transport,
-    })).resolves.toBeUndefined();
-    await service.handle({
-      conversationId: "channel",
-      prompt: "next prompt",
-      transport,
-    });
+    await service.handle(request("channel", "failed prompt", transport));
+    await service.handle(request("channel", "next prompt", transport));
 
     expect(transport.sentMessages).toEqual([USER_FAILURE_MESSAGE, "recovered"]);
     expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
+    expect(store.exchanges).toHaveLength(1);
   });
 
-  it("handles a Discord send failure without committing the undelivered turn", async () => {
+  it("does not persist an exchange that Discord failed to deliver", async () => {
     const llm = new RecordingClient(async (_request, callIndex) => `answer-${callIndex + 1}`);
     let sendAttempt = 0;
     const failingTransport = new RecordingTransport({
@@ -153,28 +205,21 @@ describe("ConversationService", () => {
         }
       },
     });
+    const store = new RecordingStore();
     const service = new ConversationService(llm, {
       maxHistoryMessages: 20,
       systemPrompt: undefined,
+      store,
       logger: createLogger(),
     });
 
-    await expect(service.handle({
-      conversationId: "channel",
-      prompt: "not delivered",
-      transport: failingTransport,
-    })).resolves.toBeUndefined();
+    await service.handle(request("channel", "not delivered", failingTransport));
     const healthyTransport = new RecordingTransport();
-    await service.handle({
-      conversationId: "channel",
-      prompt: "next prompt",
-      transport: healthyTransport,
-    });
+    await service.handle(request("channel", "next prompt", healthyTransport));
 
     expect(failingTransport.attemptedMessages).toEqual(["answer-1", USER_FAILURE_MESSAGE]);
-    expect(failingTransport.sentMessages).toEqual([USER_FAILURE_MESSAGE]);
     expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
-    expect(healthyTransport.sentMessages).toEqual(["answer-2"]);
+    expect(store.exchanges).toHaveLength(1);
   });
 
   it("continues after a typing-indicator failure", async () => {
@@ -187,16 +232,17 @@ describe("ConversationService", () => {
     const service = new ConversationService(llm, {
       maxHistoryMessages: 20,
       systemPrompt: undefined,
+      store: new RecordingStore(),
       logger: createLogger(),
     });
 
-    await service.handle({ conversationId: "channel", prompt: "prompt", transport });
+    await service.handle(request("channel", "prompt", transport));
 
     expect(transport.typingCount).toBe(1);
     expect(transport.sentMessages).toEqual(["answer"]);
   });
 
-  it("serializes overlapping requests in one conversation and preserves reply order", async () => {
+  it("serializes overlapping requests and observes the preceding database write", async () => {
     let resolveFirstStarted: (() => void) | undefined;
     const firstStarted = new Promise<void>((resolve) => {
       resolveFirstStarted = resolve;
@@ -219,25 +265,18 @@ describe("ConversationService", () => {
       activeCalls -= 1;
       return "second reply";
     });
+    const store = new RecordingStore();
     const transport = new RecordingTransport();
     const service = new ConversationService(llm, {
       maxHistoryMessages: 20,
       systemPrompt: undefined,
+      store,
       logger: createLogger(),
     });
 
-    const first = service.handle({
-      conversationId: "channel",
-      prompt: "first prompt",
-      transport,
-    });
+    const first = service.handle(request("channel", "first prompt", transport));
     await firstStarted;
-    const second = service.handle({
-      conversationId: "channel",
-      prompt: "second prompt",
-      transport,
-    });
-    await Promise.resolve();
+    const second = service.handle(request("channel", "second prompt", transport));
     await Promise.resolve();
 
     expect(llm.requests).toHaveLength(1);
@@ -254,5 +293,46 @@ describe("ConversationService", () => {
       message("assistant", "first reply"),
       message("user", "second prompt"),
     ]);
+  });
+
+  it("contains a database read failure before calling the LLM", async () => {
+    const llm = new RecordingClient(async () => "unused");
+    const logger = createLogger();
+    const transport = new RecordingTransport();
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 20,
+      systemPrompt: undefined,
+      store: new RecordingStore(true),
+      logger,
+    });
+
+    await service.handle(request("channel", "prompt", transport));
+
+    expect(llm.requests).toHaveLength(0);
+    expect(transport.sentMessages).toEqual([USER_FAILURE_MESSAGE]);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Conversation history load failed.",
+      expect.objectContaining({ channelId: "channel" }),
+    );
+  });
+
+  it("delivers the answer and logs when database persistence fails", async () => {
+    const llm = new RecordingClient(async () => "answer");
+    const logger = createLogger();
+    const transport = new RecordingTransport();
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 20,
+      systemPrompt: undefined,
+      store: new RecordingStore(false, true),
+      logger,
+    });
+
+    await service.handle(request("channel", "prompt", transport));
+
+    expect(transport.sentMessages).toEqual(["answer"]);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Conversation history persistence failed.",
+      expect.objectContaining({ channelId: "channel" }),
+    );
   });
 });

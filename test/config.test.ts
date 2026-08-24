@@ -8,6 +8,7 @@ const REQUIRED_ENV: NodeJS.ProcessEnv = {
   DISCORD_TOKEN: "discord-token",
   LLM_API_KEY: "llm-key",
   LLM_MODEL: "model-name",
+  DATABASE_URL: "postgresql://user:password@db.example/neondb?sslmode=require",
 };
 
 describe("loadConfig", () => {
@@ -17,6 +18,7 @@ describe("loadConfig", () => {
       llmApiKey: "llm-key",
       llmModel: "model-name",
       llmBaseUrl: "https://api.openai.com/v1",
+      databaseUrl: "postgresql://user:password@db.example/neondb?sslmode=require",
       systemPrompt: undefined,
       maxHistoryMessages: 20,
     });
@@ -33,6 +35,7 @@ describe("loadConfig", () => {
       llmApiKey: "llm-key",
       llmModel: "model-name",
       llmBaseUrl: "https://provider.example/openai/v1",
+      databaseUrl: "postgresql://user:password@db.example/neondb?sslmode=require",
       systemPrompt: "  preserve this spacing  ",
       maxHistoryMessages: 7,
     });
@@ -53,6 +56,7 @@ describe("loadConfig", () => {
     expect(String(error)).toContain("DISCORD_TOKEN");
     expect(String(error)).toContain("LLM_API_KEY");
     expect(String(error)).toContain("LLM_MODEL");
+    expect(String(error)).toContain("DATABASE_URL");
   });
 
   it.each(["0", "-1", "1.5", "not-a-number"])(
@@ -79,6 +83,23 @@ describe("loadConfig", () => {
 
     expect(error).toBeInstanceOf(ConfigurationError);
     expect(String(error)).toContain("must not contain credentials");
+    expect(String(error)).not.toContain(embeddedSecret);
+  });
+
+  it("rejects invalid database URLs without exposing credentials", () => {
+    const embeddedSecret = "database-password-secret";
+    let error: unknown;
+    try {
+      loadConfig({
+        ...REQUIRED_ENV,
+        DATABASE_URL: `https://user:${embeddedSecret}@db.example/neondb`,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect(String(error)).toContain("DATABASE_URL must use postgres");
     expect(String(error)).not.toContain(embeddedSecret);
   });
 });

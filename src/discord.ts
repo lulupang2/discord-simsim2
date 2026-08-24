@@ -33,7 +33,10 @@ export function attachDiscordMessageHandler(
 
     const transport = createTransport(message.channel);
     void conversations.handle({
-      conversationId: message.channelId,
+      channelId: message.channelId,
+      guildId: message.guildId,
+      userId: message.author.id,
+      botUserId,
       prompt,
       transport,
     }).catch((error: unknown) => {

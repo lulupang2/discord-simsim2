@@ -6,6 +6,7 @@ export interface BotConfig {
   readonly llmApiKey: string;
   readonly llmModel: string;
   readonly llmBaseUrl: string;
+  readonly databaseUrl: string;
   readonly systemPrompt: string | undefined;
   readonly maxHistoryMessages: number;
 }
@@ -20,6 +21,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const llmApiKey = readRequired(env, "LLM_API_KEY", errors);
   const llmModel = readRequired(env, "LLM_MODEL", errors);
   const llmBaseUrl = readBaseUrl(env.LLM_BASE_URL, errors);
+  const databaseUrl = readDatabaseUrl(env.DATABASE_URL, errors);
   const maxHistoryMessages = readMaxHistory(env.MAX_HISTORY_MESSAGES, errors);
   const systemPrompt = readSystemPrompt(env.BOT_SYSTEM_PROMPT);
 
@@ -29,6 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     llmApiKey === undefined ||
     llmModel === undefined ||
     llmBaseUrl === undefined ||
+    databaseUrl === undefined ||
     maxHistoryMessages === undefined
   ) {
     throw new ConfigurationError(
@@ -41,6 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     llmApiKey,
     llmModel,
     llmBaseUrl,
+    databaseUrl,
     systemPrompt,
     maxHistoryMessages,
   };
@@ -58,6 +62,34 @@ function readRequired(
   }
 
   return value;
+}
+
+function readDatabaseUrl(
+  rawValue: string | undefined,
+  errors: string[],
+): string | undefined {
+  const value = rawValue?.trim();
+  if (value === undefined || value.length === 0) {
+    errors.push("DATABASE_URL is required and must not be blank.");
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+      errors.push("DATABASE_URL must use postgres:// or postgresql://.");
+      return undefined;
+    }
+    if (url.hostname.length === 0 || url.username.length === 0 || url.pathname === "/") {
+      errors.push("DATABASE_URL must include a host, user, and database name.");
+      return undefined;
+    }
+
+    return value;
+  } catch {
+    errors.push("DATABASE_URL must be a valid PostgreSQL connection URL.");
+    return undefined;
+  }
 }
 
 function readBaseUrl(rawValue: string | undefined, errors: string[]): string | undefined {

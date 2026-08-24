@@ -11,14 +11,32 @@ export interface ConversationTransport {
 }
 
 export interface ConversationRequest {
-  readonly conversationId: string;
+  readonly channelId: string;
+  readonly guildId: string | null;
+  readonly userId: string;
+  readonly botUserId: string;
   readonly prompt: string;
   readonly transport: ConversationTransport;
+}
+
+export interface ConversationExchange {
+  readonly channelId: string;
+  readonly guildId: string | null;
+  readonly userId: string;
+  readonly botUserId: string;
+  readonly userMessage: string;
+  readonly assistantMessage: string;
+}
+
+export interface ConversationStore {
+  getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]>;
+  appendExchange(exchange: ConversationExchange): Promise<void>;
 }
 
 export interface ConversationServiceOptions {
   readonly maxHistoryMessages: number;
   readonly systemPrompt: string | undefined;
+  readonly store: ConversationStore;
   readonly logger?: Logger;
 }
 
@@ -26,8 +44,8 @@ export class ConversationService {
   readonly #llm: ChatCompletionClient;
   readonly #maxHistoryMessages: number;
   readonly #systemPrompt: string | undefined;
+  readonly #store: ConversationStore;
   readonly #logger: Logger;
-  readonly #histories = new Map<string, readonly ChatMessage[]>();
   readonly #queue = new KeyedSerialQueue();
 
   constructor(llm: ChatCompletionClient, options: ConversationServiceOptions) {
@@ -38,17 +56,18 @@ export class ConversationService {
     this.#llm = llm;
     this.#maxHistoryMessages = options.maxHistoryMessages;
     this.#systemPrompt = options.systemPrompt;
+    this.#store = options.store;
     this.#logger = options.logger ?? consoleLogger;
   }
 
   async handle(request: ConversationRequest): Promise<void> {
     try {
-      await this.#queue.run(request.conversationId, async () => {
+      await this.#queue.run(request.channelId, async () => {
         await this.#process(request);
       });
     } catch (error) {
       this.#logger.error("Unexpected conversation processing failure.", {
-        conversationId: request.conversationId,
+        channelId: request.channelId,
         error: summarizeError(error),
       });
       await this.#sendFailureReply(request);
@@ -60,12 +79,23 @@ export class ConversationService {
       await request.transport.sendTyping();
     } catch (error) {
       this.#logger.warn("Could not send Discord typing indicator; continuing.", {
-        conversationId: request.conversationId,
+        channelId: request.channelId,
         error: summarizeError(error),
       });
     }
 
-    const history = this.#histories.get(request.conversationId) ?? [];
+    let history: readonly ChatMessage[];
+    try {
+      history = await this.#store.getRecent(request.channelId, this.#maxHistoryMessages);
+    } catch (error) {
+      this.#logger.error("Conversation history load failed.", {
+        channelId: request.channelId,
+        error: summarizeError(error),
+      });
+      await this.#sendFailureReply(request);
+      return;
+    }
+
     const userMessage: ChatMessage = { role: "user", content: request.prompt };
     const messages = [...history, userMessage];
 
@@ -77,7 +107,7 @@ export class ConversationService {
       });
     } catch (error) {
       this.#logger.error("LLM completion failed.", {
-        conversationId: request.conversationId,
+        channelId: request.channelId,
         error: summarizeError(error),
       });
       await this.#sendFailureReply(request);
@@ -87,7 +117,7 @@ export class ConversationService {
     const chunks = splitDiscordMessage(response);
     if (chunks.length === 0) {
       this.#logger.error("LLM completion contained no sendable text.", {
-        conversationId: request.conversationId,
+        channelId: request.channelId,
       });
       await this.#sendFailureReply(request);
       return;
@@ -98,7 +128,7 @@ export class ConversationService {
         await request.transport.sendMessage(chunk);
       } catch (error) {
         this.#logger.error("Discord response send failed.", {
-          conversationId: request.conversationId,
+          channelId: request.channelId,
           chunkNumber: chunkIndex + 1,
           chunkCount: chunks.length,
           error: summarizeError(error),
@@ -108,12 +138,21 @@ export class ConversationService {
       }
     }
 
-    const assistantMessage: ChatMessage = { role: "assistant", content: response };
-    const updatedHistory = [...history, userMessage, assistantMessage];
-    const retainedHistory = updatedHistory.length > this.#maxHistoryMessages
-      ? updatedHistory.slice(-this.#maxHistoryMessages)
-      : updatedHistory;
-    this.#histories.set(request.conversationId, retainedHistory);
+    try {
+      await this.#store.appendExchange({
+        channelId: request.channelId,
+        guildId: request.guildId,
+        userId: request.userId,
+        botUserId: request.botUserId,
+        userMessage: request.prompt,
+        assistantMessage: response,
+      });
+    } catch (error) {
+      this.#logger.error("Conversation history persistence failed.", {
+        channelId: request.channelId,
+        error: summarizeError(error),
+      });
+    }
   }
 
   async #sendFailureReply(request: ConversationRequest): Promise<void> {
@@ -121,7 +160,7 @@ export class ConversationService {
       await request.transport.sendMessage(USER_FAILURE_MESSAGE);
     } catch (error) {
       this.#logger.error("Discord failure reply could not be sent.", {
-        conversationId: request.conversationId,
+        channelId: request.channelId,
         error: summarizeError(error),
       });
     }

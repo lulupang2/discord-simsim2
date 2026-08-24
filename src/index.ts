@@ -6,9 +6,12 @@ import {
 } from "discord.js";
 import { loadConfig, ConfigurationError, type BotConfig } from "./config.js";
 import { ConversationService } from "./conversation.js";
+import { createDatabaseConnection } from "./db/client.js";
+import { NeonConversationStore } from "./db/conversation-store.js";
+import { NeonLogSink } from "./db/log-sink.js";
 import { attachDiscordMessageHandler } from "./discord.js";
 import { OpenAICompatibleClient } from "./llm.js";
-import { consoleLogger, summarizeError } from "./logging.js";
+import { consoleLogger, createLogger, summarizeError } from "./logging.js";
 
 async function main(): Promise<void> {
   let config: BotConfig;
@@ -26,6 +29,21 @@ async function main(): Promise<void> {
     return;
   }
 
+  const database = createDatabaseConnection(config.databaseUrl);
+  try {
+    await database.ping();
+  } catch (error) {
+    consoleLogger.error("Neon database connection failed.", {
+      error: summarizeError(error),
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const logger = createLogger(new NeonLogSink(database.db));
+  const conversationStore = new NeonConversationStore(database.db);
+  logger.info("Neon database connection is ready.");
+
   const llm = new OpenAICompatibleClient({
     apiKey: config.llmApiKey,
     model: config.llmModel,
@@ -34,7 +52,8 @@ async function main(): Promise<void> {
   const conversations = new ConversationService(llm, {
     maxHistoryMessages: config.maxHistoryMessages,
     systemPrompt: config.systemPrompt,
-    logger: consoleLogger,
+    store: conversationStore,
+    logger,
   });
   const client = new Client({
     intents: [
@@ -46,19 +65,19 @@ async function main(): Promise<void> {
     partials: [Partials.Channel],
   });
 
-  attachDiscordMessageHandler(client, conversations, consoleLogger);
+  attachDiscordMessageHandler(client, conversations, logger);
   client.once(Events.ClientReady, (readyClient) => {
-    consoleLogger.info("Discord bot is ready.", {
+    logger.info("Discord bot is ready.", {
       user: readyClient.user.tag,
     });
   });
   client.on(Events.Error, (error) => {
-    consoleLogger.error("Discord client error.", {
+    logger.error("Discord client error.", {
       error: summarizeError(error),
     });
   });
   client.on(Events.Warn, (warning) => {
-    consoleLogger.warn("Discord client warning.", {
+    logger.warn("Discord client warning.", {
       warning: warning.slice(0, 500),
     });
   });
@@ -70,7 +89,7 @@ async function main(): Promise<void> {
     }
 
     shuttingDown = true;
-    consoleLogger.info("Shutdown signal received; closing Discord connection.", { signal });
+    logger.info("Shutdown signal received; closing Discord connection.", { signal });
     client.destroy();
   };
   process.once("SIGINT", () => {
@@ -84,7 +103,7 @@ async function main(): Promise<void> {
     await client.login(config.discordToken);
   } catch {
     if (!shuttingDown) {
-      consoleLogger.error(
+      logger.error(
         "Discord login failed. Check DISCORD_TOKEN, enabled intents, and network access.",
       );
       process.exitCode = 1;
