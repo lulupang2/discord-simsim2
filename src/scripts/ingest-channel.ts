@@ -12,6 +12,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  try {
+    process.loadEnvFile?.();
+  } catch {
+    // ignore
+  }
+
   const config = loadConfig();
   console.log(`Connecting to Neon Database...`);
   const database = createDatabaseConnection(config.databaseUrl);

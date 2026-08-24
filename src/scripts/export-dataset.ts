@@ -5,6 +5,12 @@ import { NeonConversationStore } from "../db/conversation-store.js";
 import { loadConfig } from "../config.js";
 
 async function main(): Promise<void> {
+  try {
+    process.loadEnvFile?.();
+  } catch {
+    // ignore if .env does not exist or already loaded
+  }
+
   const config = loadConfig();
   console.log("Connecting to Neon Database...");
   const database = createDatabaseConnection(config.databaseUrl);
