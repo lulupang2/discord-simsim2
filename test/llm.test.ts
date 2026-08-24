@@ -15,14 +15,14 @@ function sseData(data: object | string): string {
 }
 
 describe("GeminiInteractionsClient", () => {
-  it("streams text deltas from Google streamGenerateContent SSE endpoint", async () => {
+  it("streams text deltas from Gemini Interactions SSE endpoint", async () => {
     let capturedUrl: string | undefined;
     let capturedInit: RequestInit | undefined;
     const receivedDeltas: string[] = [];
 
     const streamBody = [
-      sseData({ candidates: [{ content: { parts: [{ text: "안녕", thought: false }] } }] }),
-      sseData({ candidates: [{ content: { parts: [{ text: "하세요!", thought: false }] } }] }),
+      sseEvent("step.delta", { delta: { type: "text", text: "안녕" }, event_type: "step.delta" }),
+      sseEvent("step.delta", { delta: { type: "text", text: "하세요!" }, event_type: "step.delta" }),
       "data: [DONE]\n\n",
     ].join("");
 
@@ -68,7 +68,7 @@ describe("GeminiInteractionsClient", () => {
 
     expect(assembled).toBe("안녕하세요!");
     expect(receivedDeltas).toEqual(["안녕", "하세요!"]);
-    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse");
+    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse");
     expect(capturedInit?.headers).toEqual({
       "x-goog-api-key": "gemini-test-key",
       "content-type": "application/json",
@@ -76,24 +76,27 @@ describe("GeminiInteractionsClient", () => {
 
     const parsedBody = JSON.parse(String(capturedInit?.body));
     expect(parsedBody).toEqual({
-      contents: [
+      model: "gemini-3.7-flash",
+      input: [
         { role: "user", parts: [{ text: "질문" }] },
         { role: "model", parts: [{ text: "이전 답변" }] },
       ],
-      generationConfig: {
-        thinkingConfig: {
-          thinkingLevel: "low",
-        },
+      stream: true,
+      store: false,
+      service_tier: "priority",
+      generation_config: {
+        thinking_level: "low",
       },
-      systemInstruction: {
-        parts: [{ text: "반말로 답해" }],
-      },
+      system_instruction: "반말로 답해",
     });
   });
 
   it("normalizes base URLs by stripping trailing /v1beta/openai or /v1", async () => {
     let capturedUrl: string | undefined;
-    const streamBody = sseData({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+    const streamBody = sseEvent("step.delta", {
+      delta: { type: "text", text: "ok" },
+      event_type: "step.delta",
+    });
     const encoder = new TextEncoder();
 
     const client = new GeminiInteractionsClient({
@@ -118,7 +121,7 @@ describe("GeminiInteractionsClient", () => {
       onDelta: () => undefined,
     });
 
-    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse");
+    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse");
   });
 
   it("retries transient 503 responses before streaming", async () => {
@@ -139,7 +142,10 @@ describe("GeminiInteractionsClient", () => {
         const stream = new ReadableStream({
           start(controller) {
             controller.enqueue(encoder.encode(
-              sseData({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }),
+              sseEvent("step.delta", {
+                delta: { type: "text", text: "ok" },
+                event_type: "step.delta",
+              }),
             ));
             controller.close();
           },
@@ -176,7 +182,10 @@ describe("GeminiInteractionsClient", () => {
   });
 
   it("handles stream error event gracefully", async () => {
-    const streamBody = sseData({ error: { message: "quota exceeded" } });
+    const streamBody = sseEvent("error", {
+      error: { message: "quota exceeded" },
+      event_type: "error",
+    });
     const encoder = new TextEncoder();
     const client = new GeminiInteractionsClient({
       apiKey: "gemini-test-key",

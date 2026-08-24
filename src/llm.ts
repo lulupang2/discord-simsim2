@@ -62,26 +62,26 @@ export class GeminiInteractionsClient implements LlmStreamClient {
       base = DEFAULT_GEMINI_BASE_URL;
     }
 
-    this.#endpoint = `${base}/v1beta/models/${encodeURIComponent(this.#model)}:streamGenerateContent?alt=sse`;
+    this.#endpoint = `${base}/v1beta/interactions?alt=sse`;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#sleep = options.sleepImpl ?? sleep;
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {
-    const contents = toGeminiContents(request.messages);
+    const input = toGeminiContents(request.messages);
     const body: Record<string, unknown> = {
-      contents,
-      generationConfig: {
-        thinkingConfig: {
-          thinkingLevel: this.#thinkingLevel,
-        },
+      model: this.#model,
+      input,
+      stream: true,
+      store: false,
+      service_tier: "priority",
+      generation_config: {
+        thinking_level: this.#thinkingLevel,
       },
     };
 
     if (request.systemPrompt !== undefined && request.systemPrompt.trim().length > 0) {
-      body.systemInstruction = {
-        parts: [{ text: request.systemPrompt }],
-      };
+      body.system_instruction = request.systemPrompt;
     }
 
     const response = await this.#fetchWithRetry(JSON.stringify(body));
