@@ -119,7 +119,7 @@ export class NeonConversationStore implements ConversationStore {
       groupedByChannel.set(row.channelId, channelRows);
     }
 
-    const defaultSystem = options?.systemPrompt ?? "너는 디스코드 대화형 어시스턴트 봇 안내견이야.";
+    const defaultSystem = options?.systemPrompt ?? "너는 디스코드 대화형 어시스턴트 봇 답장이야.";
 
     for (const [, channelRows] of groupedByChannel) {
       let currentSampleMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
@@ -259,7 +259,7 @@ export class NeonConversationStore implements ConversationStore {
 function extractKeywords(query: string): string[] {
   const stopWords = new Set([
     "이", "그", "저", "것", "수", "등", "및", "를", "을", "가", "이", "은", "는", "에", "의", "로", "으로",
-    "에서", "에게", "한테", "과", "와", "도", "만", "봇", "안내견", "디스코드", "질문", "답변", "알려줘",
+    "에서", "에게", "한테", "과", "와", "도", "만", "봇", "답장", "안내견", "디스코드", "질문", "답변", "알려줘",
     "해줘", "말해줘", "뭐야", "어떻게", "언제", "어디", "누구", "왜", "test", "please", "the", "a", "an", "is",
   ]);
 

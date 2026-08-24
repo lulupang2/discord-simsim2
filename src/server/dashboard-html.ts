@@ -4,7 +4,7 @@ export function getDashboardHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🐾 안내견 (GuideDog) 관리자 대시보드</title>
+  <title>🐾 답장 (Dapjang) 관리자 대시보드</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -283,7 +283,7 @@ export function getDashboardHtml(): string {
 
   <nav class="navbar">
     <div class="brand">
-      🐾 <span>안내견</span> GuideDog Admin
+      🐾 <span>답장</span> Dapjang Admin
       <div class="status-badge">
         <div class="status-dot"></div> Live Online
       </div>
@@ -293,6 +293,7 @@ export function getDashboardHtml(): string {
       <button class="nav-btn" onclick="switchTab('tab-messages')">실시간 대화</button>
       <button class="nav-btn" onclick="switchTab('tab-logs')">시스템 로그</button>
       <button class="nav-btn" onclick="switchTab('tab-playground')">웹 챗 테스터</button>
+      <button class="nav-btn" onclick="switchTab('tab-settings')">설정</button>
       <a href="/swagger" target="_blank" class="nav-btn" style="text-decoration:none;">Swagger API ↗</a>
     </div>
   </nav>
@@ -434,10 +435,45 @@ export function getDashboardHtml(): string {
       </div>
     </div>
 
+    <!-- Tab 5: Settings -->
+    <div id="tab-settings" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">⚙️ 런타임 설정 (LLM · 페르소나)</div>
+          <span style="color:var(--text-dim); font-size:0.8rem;">저장 전 실제 LLM 연결을 테스트하고, 성공 시에만 적용됩니다</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:0.9rem; max-width:720px;">
+          <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            Base URL
+            <input type="text" id="set-base-url" class="chat-input" placeholder="https://api.example.com/v1">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            API Key <span id="set-key-masked" style="color:var(--text-dim);"></span>
+            <input type="password" id="set-api-key" class="chat-input" placeholder="비워두면 현재 키 유지">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            모델명
+            <input type="text" id="set-model" class="chat-input" placeholder="예: qwen/qwen3.8-max-free">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            <input type="number" id="set-max-tokens" class="chat-input" min="16" max="8192">
+          </label>
+          <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            시스템 프롬프트 (말투·페르소나)
+            <textarea id="set-system-prompt" class="chat-input" rows="4" placeholder="비워두면 현재 값 유지"></textarea>
+          </label>
+          <div style="display:flex; align-items:center; gap:0.8rem;">
+            <button class="btn btn-primary" onclick="saveSettings(event)">저장 (연결 테스트 후 적용)</button>
+            <span id="set-status" style="font-size:0.85rem; color:var(--text-dim);"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <footer>
-    🐾 GuideDog Admin Dashboard • Powered by ElysiaJS & Neon Database
+    🐾 Dapjang Admin Dashboard • Powered by ElysiaJS & Neon Database
   </footer>
 
   <script>
@@ -448,6 +484,56 @@ export function getDashboardHtml(): string {
       event.target.classList.add('active');
       if (tabId === 'tab-messages') loadMessages();
       if (tabId === 'tab-logs') loadLogs();
+      if (tabId === 'tab-settings') loadSettings();
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const s = await res.json();
+        document.getElementById('set-base-url').value = s.baseUrl || '';
+        document.getElementById('set-model').value = s.model || '';
+        document.getElementById('set-max-tokens').value = s.maxTokens || '';
+        document.getElementById('set-system-prompt').value = s.systemPrompt || '';
+        document.getElementById('set-key-masked').innerText = s.apiKeyMasked ? '(현재: ' + s.apiKeyMasked + ')' : '';
+        document.getElementById('set-status').innerText = s.source === 'file' ? '저장된 설정 사용 중' : '.env 기본값 사용 중';
+      } catch (err) {
+        console.error('Failed to load settings', err);
+      }
+    }
+
+    async function saveSettings(e) {
+      e.preventDefault();
+      const status = document.getElementById('set-status');
+      status.innerText = '연결 테스트 중...';
+      const payload = {};
+      const baseUrl = document.getElementById('set-base-url').value.trim();
+      const apiKey = document.getElementById('set-api-key').value.trim();
+      const model = document.getElementById('set-model').value.trim();
+      const maxTokens = Number(document.getElementById('set-max-tokens').value);
+      const systemPrompt = document.getElementById('set-system-prompt').value;
+      if (baseUrl) payload.baseUrl = baseUrl;
+      if (apiKey) payload.apiKey = apiKey;
+      if (model) payload.model = model;
+      if (Number.isFinite(maxTokens) && maxTokens > 0) payload.maxTokens = maxTokens;
+      if (systemPrompt !== '') payload.systemPrompt = systemPrompt;
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          status.innerText = '✅ 저장 및 적용 완료 (' + data.settings.model + ')';
+          document.getElementById('set-api-key').value = '';
+          loadSettings();
+        } else {
+          status.innerText = '❌ ' + (data.error || '저장 실패');
+        }
+      } catch (err) {
+        status.innerText = '❌ 요청 실패: ' + err;
+      }
     }
 
     async function loadStats() {

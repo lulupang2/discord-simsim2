@@ -53,7 +53,7 @@ export interface ConversationServiceOptions {
 export class ConversationService {
   readonly #llm: LlmStreamClient;
   readonly #maxHistoryMessages: number;
-  readonly #systemPrompt: string | undefined;
+  #systemPrompt: string | undefined;
   readonly #store: ConversationStore;
   readonly #streamOptions: LiveStreamWriterOptions | undefined;
   readonly #logger: Logger;
@@ -69,6 +69,14 @@ export class ConversationService {
     this.#store = options.store;
     this.#streamOptions = options.streamOptions;
     this.#logger = options.logger ?? consoleLogger;
+  }
+
+  setSystemPrompt(systemPrompt: string | undefined): void {
+    this.#systemPrompt = systemPrompt;
+  }
+
+  get systemPrompt(): string | undefined {
+    return this.#systemPrompt;
   }
 
   async handle(request: ConversationRequest): Promise<void> {

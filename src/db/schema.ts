@@ -1,6 +1,7 @@
 import {
   bigserial,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,

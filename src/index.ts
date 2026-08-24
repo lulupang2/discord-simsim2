@@ -4,6 +4,8 @@ import {
   GatewayIntentBits,
   Partials,
 } from "discord.js";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadConfig, ConfigurationError, type BotConfig } from "./config.js";
 import { ConversationService } from "./conversation.js";
 import { createDatabaseConnection } from "./db/client.js";
@@ -11,6 +13,7 @@ import { NeonConversationStore } from "./db/conversation-store.js";
 import { NeonLogSink } from "./db/log-sink.js";
 import { attachDiscordMessageHandler } from "./discord.js";
 import { OpenAICompatibleClient } from "./llm.js";
+import { FileSettingsStore, type BotSettings } from "./llm-settings.js";
 import { consoleLogger, createLogger, summarizeError } from "./logging.js";
 import { createElysiaServer } from "./server/index.js";
 
@@ -57,6 +60,33 @@ async function main(): Promise<void> {
     store: conversationStore,
     logger,
   });
+  const settingsStore = new FileSettingsStore(
+    join(dirname(fileURLToPath(import.meta.url)), "../llm-settings.json"),
+  );
+  const defaultSettings: BotSettings = {
+    baseUrl: config.llmBaseUrl,
+    apiKey: config.llmApiKey,
+    model: config.llmModel,
+    maxTokens: config.llmMaxTokens,
+    systemPrompt: config.systemPrompt,
+  };
+  try {
+    const saved = await settingsStore.load();
+    if (saved !== undefined) {
+      llm.updateProviderSettings({
+        baseUrl: saved.baseUrl,
+        apiKey: saved.apiKey,
+        model: saved.model,
+        maxTokens: saved.maxTokens,
+      });
+      conversations.setSystemPrompt(saved.systemPrompt);
+      logger.info("Loaded saved runtime settings.", { model: saved.model, baseUrl: saved.baseUrl });
+    }
+  } catch (error) {
+    logger.error("Saved settings file is invalid; using environment defaults.", {
+      error: summarizeError(error),
+    });
+  }
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -73,6 +103,9 @@ async function main(): Promise<void> {
     config,
     store: conversationStore,
     llm,
+    conversations,
+    settingsStore,
+    defaultSettings,
     client,
     logger,
   });

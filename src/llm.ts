@@ -15,6 +15,19 @@ export interface LlmStreamClient {
   stream(request: StreamCompletionRequest): Promise<string>;
 }
 
+export interface LlmProviderSettings {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly model: string;
+  readonly maxTokens: number | undefined;
+}
+
+export interface LlmProviderControl extends LlmStreamClient {
+  getProviderSettings(): LlmProviderSettings;
+  updateProviderSettings(settings: LlmProviderSettings): void;
+  testConnection(): Promise<void>;
+}
+
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 export interface OpenAICompatibleClientOptions {
@@ -33,13 +46,13 @@ export class LlmProviderError extends Error {
 const MAX_REQUEST_ATTEMPTS = 4;
 const RETRY_BASE_DELAY_MS = 1_000;
 
-export class OpenAICompatibleClient implements LlmStreamClient {
-  readonly #apiKey: string;
-  readonly #model: string;
-  readonly #endpoint: string;
-  readonly #fetch: FetchLike;
-  readonly #maxTokens: number | undefined;
-  readonly #sleep: (milliseconds: number) => Promise<void>;
+export class OpenAICompatibleClient implements LlmProviderControl {
+  #apiKey: string;
+  #model: string;
+  #endpoint: string;
+  #fetch: FetchLike;
+  #maxTokens: number | undefined;
+  #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: OpenAICompatibleClientOptions) {
     this.#apiKey = options.apiKey;
@@ -48,6 +61,38 @@ export class OpenAICompatibleClient implements LlmStreamClient {
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#sleep = options.sleepImpl ?? sleep;
     this.#maxTokens = options.maxTokens;
+  }
+
+  getProviderSettings(): LlmProviderSettings {
+    return {
+      baseUrl: this.#endpoint.replace(/\/chat\/completions$/, ""),
+      apiKey: this.#apiKey,
+      model: this.#model,
+      maxTokens: this.#maxTokens,
+    };
+  }
+
+  updateProviderSettings(settings: LlmProviderSettings): void {
+    this.#apiKey = settings.apiKey;
+    this.#model = settings.model;
+    this.#endpoint = `${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    this.#maxTokens = settings.maxTokens;
+  }
+
+  async testConnection(): Promise<void> {
+    const response = await this.#fetchWithRetry(JSON.stringify({
+      model: this.#model,
+      messages: [{ role: "user", content: "ping" }],
+      max_tokens: 16,
+    }));
+    if (!response.ok) {
+      throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
+    }
+    try {
+      await response.json();
+    } catch {
+      throw new LlmProviderError("The LLM provider returned a non-JSON response.");
+    }
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {

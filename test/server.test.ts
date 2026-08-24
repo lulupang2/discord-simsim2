@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createElysiaServer } from "../src/server/index.js";
 import type { BotConfig } from "../src/config.js";
 import type { NeonConversationStore } from "../src/db/conversation-store.js";
-import type { LlmStreamClient } from "../src/llm.js";
+import type { LlmProviderControl } from "../src/llm.js";
+import type { ConversationService } from "../src/conversation.js";
+import { FileSettingsStore, type BotSettings } from "../src/llm-settings.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Client } from "discord.js";
 import type { Logger } from "../src/logging.js";
 
@@ -52,13 +56,21 @@ describe("Elysia Admin Server", () => {
     findRelevant: vi.fn().mockResolvedValue([]),
   } as unknown as NeonConversationStore;
 
-  const mockLlm: LlmStreamClient = {
+  const mockLlm = {
     stream: vi.fn().mockResolvedValue("테스트 응답"),
+    getProviderSettings: vi.fn().mockReturnValue({
+      baseUrl: "https://api.tokenrouter.com/v1",
+      apiKey: "test-key-12345678",
+      model: "qwen/qwen3.8-max-free",
+      maxTokens: 300,
+    }),
+    updateProviderSettings: vi.fn(),
+    testConnection: vi.fn().mockResolvedValue(undefined),
   };
 
   const mockClient = {
     isReady: vi.fn().mockReturnValue(true),
-    user: { tag: "안내견#3860" },
+    user: { tag: "답장#3860" },
   } as unknown as Client;
 
   const mockLogger = {
@@ -67,11 +79,26 @@ describe("Elysia Admin Server", () => {
     error: vi.fn(),
   } as unknown as Logger;
 
+  const settingsStore = new FileSettingsStore(join(tmpdir(), `simsim-settings-test-${process.pid}.json`));
+  const defaultSettings: BotSettings = {
+    baseUrl: "https://api.tokenrouter.com/v1",
+    apiKey: "env-key-12345678",
+    model: "qwen/qwen3.8-max-free",
+    maxTokens: 300,
+    systemPrompt: "system prompt",
+  };
+  const mockConversations = {
+    setSystemPrompt: vi.fn(),
+    systemPrompt: "system prompt",
+  } as unknown as ConversationService;
   const app = createElysiaServer({
     port: 3000,
     config: mockConfig,
     store: mockStore,
-    llm: mockLlm,
+    llm: mockLlm as unknown as LlmProviderControl,
+    conversations: mockConversations,
+    settingsStore,
+    defaultSettings,
     client: mockClient,
     logger: mockLogger,
   });
@@ -81,8 +108,8 @@ describe("Elysia Admin Server", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const html = await res.text();
-    expect(html).toContain("GuideDog Admin");
-    expect(html).toContain("안내견");
+    expect(html).toContain("Dapjang Admin");
+    expect(html).toContain("답장");
   });
 
   it("returns health status on /health", async () => {
@@ -129,5 +156,76 @@ describe("Elysia Admin Server", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.reply).toBe("테스트 응답");
+  });
+
+  it("returns current settings with masked api key on GET /api/settings", async () => {
+    const res = await app.handle(new Request("http://localhost/api/settings"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.source).toBe("env");
+    expect(data.baseUrl).toBe("https://api.tokenrouter.com/v1");
+    expect(data.model).toBe("qwen/qwen3.8-max-free");
+    expect(data.apiKeyMasked).not.toContain("test-key");
+    expect(data.apiKeyMasked).toContain("…");
+  });
+
+  it("tests the connection and saves on PUT /api/settings", async () => {
+    mockLlm.updateProviderSettings.mockClear();
+    mockLlm.testConnection.mockClear();
+    const res = await app.handle(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: "https://api.other-provider.example/v1",
+          apiKey: "sk-new-key-987654321",
+          model: "gpt-test",
+          maxTokens: 512,
+          systemPrompt: "너는 답장이야.",
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.settings.model).toBe("gpt-test");
+    expect(mockLlm.testConnection).toHaveBeenCalled();
+    expect(mockLlm.updateProviderSettings).toHaveBeenCalledTimes(1);
+    expect(mockConversations.setSystemPrompt).toHaveBeenCalledWith("너는 답장이야.");
+    const saved = await settingsStore.load();
+    expect(saved?.model).toBe("gpt-test");
+  });
+
+  it("reverts provider settings and saves nothing when the connection test fails", async () => {
+    mockLlm.updateProviderSettings.mockClear();
+    mockLlm.testConnection.mockClear();
+    mockLlm.testConnection.mockRejectedValueOnce(new Error("HTTP 401"));
+    const res = await app.handle(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "sk-bad-key-000000000", model: "broken-model" }),
+      }),
+    );
+    expect(res.status).toBe(502);
+    const data = await res.json();
+    expect(data.error).toContain("LLM 연결 테스트 실패");
+    expect(mockLlm.updateProviderSettings).toHaveBeenCalledTimes(2);
+    expect(mockConversations.setSystemPrompt).not.toHaveBeenCalledWith(expect.stringContaining("broken"));
+    await expect(settingsStore.load()).resolves.toMatchObject({ model: "gpt-test" });
+  });
+  it("rejects invalid settings with 400 before touching the provider", async () => {
+    mockLlm.testConnection.mockClear();
+    const res = await app.handle(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl: "not-a-url" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("baseUrl");
+    expect(mockLlm.testConnection).not.toHaveBeenCalled();
   });
 });

@@ -4,22 +4,28 @@ import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
 import type { Client } from "discord.js";
 import type { BotConfig } from "../config.js";
+import type { ConversationService } from "../conversation.js";
 import type { NeonConversationStore } from "../db/conversation-store.js";
-import type { LlmStreamClient } from "../llm.js";
+import type { LlmProviderControl } from "../llm.js";
 import type { Logger } from "../logging.js";
+import { maskApiKey, validateSettings, type BotSettings, type FileSettingsStore } from "../llm-settings.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 
 export interface ElysiaServerOptions {
   readonly port: number;
   readonly config: BotConfig;
   readonly store: NeonConversationStore;
-  readonly llm: LlmStreamClient;
+  readonly llm: LlmProviderControl;
+  readonly conversations: ConversationService;
+  readonly settingsStore: FileSettingsStore;
+  readonly defaultSettings: BotSettings;
   readonly client: Client;
   readonly logger: Logger;
 }
 
+
 export function createElysiaServer(options: ElysiaServerOptions) {
-  const { port, config, store, llm, client, logger } = options;
+  const { port, config, store, llm, conversations, settingsStore, defaultSettings, client, logger } = options;
 
   const app = new Elysia({ adapter: node() })
     .use(cors())
@@ -28,7 +34,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         path: "/swagger",
         documentation: {
           info: {
-            title: "🐾 GuideDog Admin API",
+            title: "🐾 Dapjang Admin API",
             description: "Discord LLM Chatbot & RAG Engine Management API",
             version: "1.0.0",
           },
@@ -48,7 +54,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       status: "ok",
       uptimeSeconds: Math.floor(process.uptime()),
       botStatus: client.isReady() ? "online" : "connecting",
-      model: config.llmModel,
+      model: llm.getProviderSettings().model,
       timestamp: new Date().toISOString(),
     }))
 
@@ -57,7 +63,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       const stats = await store.getStatistics();
       return {
         ...stats,
-        model: config.llmModel,
+        model: llm.getProviderSettings().model,
         uptimeSeconds: Math.floor(process.uptime()),
         botTag: client.user?.tag ?? "Connecting...",
       };
@@ -132,7 +138,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         }
 
         const relevantContext = await store.findRelevant(prompt, { limit: 3 });
-        let systemPrompt = config.systemPrompt ?? "너는 디스코드 대화형 어시스턴트 봇 안내견이야.";
+        let systemPrompt = conversations.systemPrompt ?? "너는 디스코드 대화형 어시스턴트 봇 답장이야.";
 
         if (relevantContext.length > 0) {
           const contextSnippet = relevantContext
@@ -160,6 +166,87 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       {
         body: t.Object({
           prompt: t.String(),
+        }),
+      },
+    )
+
+    // 8. Runtime settings (LLM provider + persona)
+    .get("/api/settings", async () => {
+      const saved = await settingsStore.load();
+      const settings = saved ?? defaultSettings;
+      return {
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        maxTokens: settings.maxTokens,
+        systemPrompt: settings.systemPrompt ?? null,
+        apiKeyMasked: maskApiKey(llm.getProviderSettings().apiKey),
+        source: saved === undefined ? "env" : "file",
+      };
+    })
+    .put(
+      "/api/settings",
+      async ({ body, set }) => {
+        const current = (await settingsStore.load()) ?? defaultSettings;
+        const candidate: BotSettings = {
+          baseUrl: body.baseUrl?.trim() || current.baseUrl,
+          apiKey: body.apiKey?.trim() || current.apiKey,
+          model: body.model?.trim() || current.model,
+          maxTokens: body.maxTokens ?? current.maxTokens,
+          systemPrompt: body.systemPrompt === undefined || body.systemPrompt === null
+            ? current.systemPrompt
+            : (body.systemPrompt.trim().length === 0 ? undefined : body.systemPrompt),
+        };
+
+        try {
+          validateSettings(candidate);
+        } catch (error) {
+          set.status = 400;
+          return { error: error instanceof Error ? error.message : "Invalid settings." };
+        }
+
+        const previousProvider = llm.getProviderSettings();
+        llm.updateProviderSettings({
+          baseUrl: candidate.baseUrl,
+          apiKey: candidate.apiKey,
+          model: candidate.model,
+          maxTokens: candidate.maxTokens,
+        });
+
+        try {
+          await llm.testConnection();
+        } catch (error) {
+          llm.updateProviderSettings(previousProvider);
+          set.status = 502;
+          return { error: `LLM 연결 테스트 실패, 설정을 저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}` };
+        }
+
+        conversations.setSystemPrompt(candidate.systemPrompt);
+        try {
+          await settingsStore.save(candidate);
+        } catch (error) {
+          set.status = 500;
+          return { error: `설정 파일 저장 실패: ${error instanceof Error ? error.message : String(error)}` };
+        }
+
+        logger.info("Runtime settings updated.", { model: candidate.model, baseUrl: candidate.baseUrl });
+        return {
+          ok: true,
+          settings: {
+            baseUrl: candidate.baseUrl,
+            model: candidate.model,
+            maxTokens: candidate.maxTokens,
+            systemPrompt: candidate.systemPrompt ?? null,
+            apiKeyMasked: maskApiKey(candidate.apiKey),
+          },
+        };
+      },
+      {
+        body: t.Object({
+          baseUrl: t.Optional(t.String()),
+          apiKey: t.Optional(t.String()),
+          model: t.Optional(t.String()),
+          maxTokens: t.Optional(t.Integer()),
+          systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
         }),
       },
     );
