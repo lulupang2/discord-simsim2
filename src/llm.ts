@@ -27,6 +27,7 @@ export interface GeminiInteractionsClientOptions {
   readonly thinkingLevel?: GeminiThinkingLevel;
   readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
+  readonly sleepImpl?: (milliseconds: number) => Promise<void>;
 }
 
 export class LlmProviderError extends Error {
@@ -35,6 +36,8 @@ export class LlmProviderError extends Error {
 
 const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 const DEFAULT_THINKING_LEVEL: GeminiThinkingLevel = "low";
+const MAX_REQUEST_ATTEMPTS = 4;
+const RETRY_BASE_DELAY_MS = 1_000;
 
 export class GeminiInteractionsClient implements LlmStreamClient {
   readonly #apiKey: string;
@@ -42,21 +45,26 @@ export class GeminiInteractionsClient implements LlmStreamClient {
   readonly #thinkingLevel: GeminiThinkingLevel;
   readonly #endpoint: string;
   readonly #fetch: typeof fetch;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: GeminiInteractionsClientOptions) {
     this.#apiKey = options.apiKey;
     this.#model = options.model;
     this.#thinkingLevel = options.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
-    
-    // Normalize base URL: strip trailing slashes, /v1beta/openai, /v1, etc.
+
     let base = (options.baseUrl ?? DEFAULT_GEMINI_BASE_URL).trim().replace(/\/+$/, "");
-    base = base.replace(/\/v1beta\/openai$/i, "").replace(/\/openai$/i, "").replace(/\/v1$/i, "").replace(/\/+$/, "");
+    base = base
+      .replace(/\/v1beta\/(?:openai|interactions)$/i, "")
+      .replace(/\/openai$/i, "")
+      .replace(/\/v1$/i, "")
+      .replace(/\/+$/, "");
     if (!base.startsWith("http://") && !base.startsWith("https://")) {
       base = DEFAULT_GEMINI_BASE_URL;
     }
 
     this.#endpoint = `${base}/v1beta/models/${encodeURIComponent(this.#model)}:streamGenerateContent?alt=sse`;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
+    this.#sleep = options.sleepImpl ?? sleep;
   }
 
   async stream(request: StreamCompletionRequest): Promise<string> {
@@ -76,19 +84,7 @@ export class GeminiInteractionsClient implements LlmStreamClient {
       };
     }
 
-    let response: Response;
-    try {
-      response = await this.#fetch(this.#endpoint, {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": this.#apiKey,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
-    } catch {
-      throw new LlmProviderError("Could not reach the Gemini API.");
-    }
+    const response = await this.#fetchWithRetry(JSON.stringify(body));
 
     if (!response.ok) {
       throw new LlmProviderError(`The Gemini API returned HTTP ${response.status}.`);
@@ -118,6 +114,54 @@ export class GeminiInteractionsClient implements LlmStreamClient {
 
     return assembled;
   }
+  async #fetchWithRetry(body: string): Promise<Response> {
+    for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.#fetch(this.#endpoint, {
+          method: "POST",
+          headers: {
+            "x-goog-api-key": this.#apiKey,
+            "content-type": "application/json",
+          },
+          body,
+        });
+      } catch {
+        if (attempt === MAX_REQUEST_ATTEMPTS) {
+          throw new LlmProviderError("Could not reach the Gemini API.");
+        }
+        await this.#sleep(retryDelayMs(attempt));
+        continue;
+      }
+
+      const retryable = response.status === 429 || response.status === 503;
+      if (!retryable || attempt === MAX_REQUEST_ATTEMPTS) {
+        return response;
+      }
+
+      if (response.body !== null) {
+        await response.body.cancel().catch(() => undefined);
+      }
+      await this.#sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
+    }
+
+    throw new LlmProviderError("Could not reach the Gemini API.");
+  }
+}
+
+
+function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
+  const retryAfterSeconds = Number(retryAfterHeader);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(retryAfterSeconds * 1_000, 10_000);
+  }
+  return Math.min(RETRY_BASE_DELAY_MS * (2 ** (attempt - 1)), 10_000);
+}
+
+async function sleep(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function toGeminiContents(messages: readonly ChatMessage[]): GeminiContentItem[] {
