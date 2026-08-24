@@ -162,18 +162,99 @@ publicDnsResolver.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const lookupWithPublicDns: LookupFunction = (hostname, options, callback): void => {
   publicDnsResolver.resolve4(hostname, (error, addresses) => {
-    const address = addresses[0];
-    if (error !== null || address === undefined) {
-      callback(error ?? new Error(`No IPv4 address found for ${hostname}.`), "", 4);
+    const address = error === null && Array.isArray(addresses)
+      ? addresses[0]
+      : undefined;
+    if (address !== undefined) {
+      if (options.all) {
+        callback(null, [{ address, family: 4 }]);
+      } else {
+        callback(null, address, 4);
+      }
       return;
     }
-    if (options.all) {
-      callback(null, [{ address, family: 4 }]);
-      return;
-    }
-    callback(null, address, 4);
+
+    void resolveWithDnsOverHttps(hostname).then((fallbackAddress) => {
+      if (options.all) {
+        callback(null, [{ address: fallbackAddress, family: 4 }]);
+      } else {
+        callback(null, fallbackAddress, 4);
+      }
+    }).catch((fallbackError: unknown) => {
+      const lookupError = fallbackError instanceof Error
+        ? fallbackError
+        : new Error(`No IPv4 address found for ${hostname}.`);
+      callback(lookupError, "", 4);
+    });
   });
 };
+
+function resolveWithDnsOverHttps(hostname: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const request = httpsRequest({
+      hostname: "1.1.1.1",
+      servername: "cloudflare-dns.com",
+      path: `/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
+      headers: {
+        host: "cloudflare-dns.com",
+        accept: "application/dns-json",
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+      response.once("end", () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`DNS over HTTPS returned HTTP ${response.statusCode ?? 0}.`));
+          return;
+        }
+
+        let payload: unknown;
+        try {
+          payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          reject(new Error("DNS over HTTPS returned invalid JSON."));
+          return;
+        }
+
+        if (typeof payload !== "object" || payload === null || !("Answer" in payload)) {
+          reject(new Error(`DNS over HTTPS returned no answer for ${hostname}.`));
+          return;
+        }
+
+        const answers = payload.Answer;
+        if (!Array.isArray(answers)) {
+          reject(new Error(`DNS over HTTPS returned no answer for ${hostname}.`));
+          return;
+        }
+
+        for (const answer of answers) {
+          if (
+            typeof answer === "object" &&
+            answer !== null &&
+            "type" in answer &&
+            answer.type === 1 &&
+            "data" in answer &&
+            typeof answer.data === "string" &&
+            /^\d{1,3}(?:\.\d{1,3}){3}$/.test(answer.data)
+          ) {
+            resolve(answer.data);
+            return;
+          }
+        }
+        reject(new Error(`DNS over HTTPS returned no IPv4 answer for ${hostname}.`));
+      });
+      response.once("error", reject);
+    });
+
+    request.once("error", reject);
+    request.setTimeout(5_000, () => {
+      request.destroy(new Error("DNS over HTTPS timed out."));
+    });
+    request.end();
+  });
+}
 
 function createGeminiFetch(): FetchLike {
   return async (input, init) => new Promise<Response>((resolve, reject) => {
