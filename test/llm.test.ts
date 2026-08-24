@@ -1,153 +1,69 @@
 import { describe, expect, it } from "vitest";
 import {
-  GeminiInteractionsClient,
   LlmProviderError,
+  OpenAICompatibleClient,
 } from "../src/llm.js";
 
-function sseEvent(eventType: string, data: object | string): string {
-  const dataString = typeof data === "string" ? data : JSON.stringify(data);
-  return `event: ${eventType}\ndata: ${dataString}\n\n`;
-}
-
-function sseData(data: object | string): string {
-  const dataString = typeof data === "string" ? data : JSON.stringify(data);
-  return `data: ${dataString}\n\n`;
-}
-
-describe("GeminiInteractionsClient", () => {
-  it("streams text deltas from Gemini Interactions SSE endpoint", async () => {
+describe("OpenAICompatibleClient", () => {
+  it("calls chat completions and forwards the completed text as one delta", async () => {
     let capturedUrl: string | undefined;
     let capturedInit: RequestInit | undefined;
-    const receivedDeltas: string[] = [];
-
-    const streamBody = [
-      sseEvent("step.delta", { delta: { type: "text", text: "안녕" }, event_type: "step.delta" }),
-      sseEvent("step.delta", { delta: { type: "text", text: "하세요!" }, event_type: "step.delta" }),
-      "data: [DONE]\n\n",
-    ].join("");
-
-    const encoder = new TextEncoder();
-    const fetchImpl = async (
-      input: string | URL | Request,
-      init?: RequestInit,
-    ): Promise<Response> => {
-      capturedUrl = String(input);
-      capturedInit = init;
-
-      const stream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(encoder.encode(streamBody));
-          controller.close();
-        },
-      });
-
-      return new Response(stream, {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    };
-
-    const client = new GeminiInteractionsClient({
-      apiKey: "gemini-test-key",
-      model: "gemini-3.7-flash",
-      thinkingLevel: "low",
-      baseUrl: "https://generativelanguage.googleapis.com",
-      fetchImpl,
-    });
-
-    const assembled = await client.stream({
-      systemPrompt: "반말로 답해",
-      messages: [
-        { role: "user", content: "질문" },
-        { role: "assistant", content: "이전 답변" },
-      ],
-      onDelta: (delta) => {
-        receivedDeltas.push(delta);
+    const deltas: string[] = [];
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1/",
+      fetchImpl: async (input, init) => {
+        capturedUrl = input;
+        capturedInit = init;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "테스트 성공" } }],
+        }), { status: 200 });
       },
     });
 
-    expect(assembled).toBe("안녕하세요!");
-    expect(receivedDeltas).toEqual(["안녕", "하세요!"]);
-    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse");
+    const response = await client.stream({
+      systemPrompt: "반말로 답해",
+      messages: [{ role: "user", content: "질문" }],
+      onDelta: (text) => {
+        deltas.push(text);
+      },
+    });
+
+    expect(response).toBe("테스트 성공");
+    expect(deltas).toEqual(["테스트 성공"]);
+    expect(capturedUrl).toBe("https://api.tokenrouter.com/v1/chat/completions");
     expect(capturedInit?.headers).toEqual({
-      "x-goog-api-key": "gemini-test-key",
+      authorization: "Bearer test-key",
       "content-type": "application/json",
     });
-
-    const parsedBody = JSON.parse(String(capturedInit?.body));
-    expect(parsedBody).toEqual({
-      model: "gemini-3.7-flash",
-      input: "User:\n질문\n\nAssistant:\n이전 답변",
-      stream: true,
-      store: false,
-      service_tier: "priority",
-      generation_config: {
-        thinking_level: "low",
-      },
-      system_instruction: "반말로 답해",
+    expect(JSON.parse(String(capturedInit?.body))).toEqual({
+      model: "qwen/qwen3.8-max-free",
+      messages: [
+        { role: "system", content: "반말로 답해" },
+        { role: "user", content: "질문" },
+      ],
     });
   });
 
-  it("normalizes base URLs by stripping trailing /v1beta/openai or /v1", async () => {
-    let capturedUrl: string | undefined;
-    const streamBody = sseEvent("step.delta", {
-      delta: { type: "text", text: "ok" },
-      event_type: "step.delta",
-    });
-    const encoder = new TextEncoder();
-
-    const client = new GeminiInteractionsClient({
-      apiKey: "gemini-test-key",
-      model: "gemini-3.7-flash",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/interactions/",
-      fetchImpl: async (input) => {
-        capturedUrl = String(input);
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode(streamBody));
-            controller.close();
-          },
-        });
-        return new Response(stream, { status: 200 });
-      },
-    });
-
-    await client.stream({
-      systemPrompt: undefined,
-      messages: [{ role: "user", content: "hi" }],
-      onDelta: () => undefined,
-    });
-
-    expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse");
-  });
-
-  it("retries transient 503 responses before streaming", async () => {
+  it("retries a transient 503 response", async () => {
     let attempts = 0;
     const delays: number[] = [];
-    const encoder = new TextEncoder();
-    const client = new GeminiInteractionsClient({
-      apiKey: "gemini-test-key",
-      model: "gemini-3.7-flash",
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
       sleepImpl: async (milliseconds) => {
         delays.push(milliseconds);
       },
       fetchImpl: async () => {
         attempts += 1;
         if (attempts === 1) {
-          return new Response("high demand", { status: 503 });
+          return new Response("busy", { status: 503 });
         }
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode(
-              sseEvent("step.delta", {
-                delta: { type: "text", text: "ok" },
-                event_type: "step.delta",
-              }),
-            ));
-            controller.close();
-          },
-        });
-        return new Response(stream, { status: 200 });
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "ok" } }],
+        }), { status: 200 });
       },
     });
 
@@ -161,49 +77,19 @@ describe("GeminiInteractionsClient", () => {
     expect(attempts).toBe(2);
     expect(delays).toEqual([1_000]);
   });
-  it("handles HTTP error status without leaking secrets", async () => {
-    const client = new GeminiInteractionsClient({
-      apiKey: "gemini-test-key",
-      model: "gemini-3.7-flash",
 
-      fetchImpl: async () => new Response("secret error message", { status: 403 }),
+  it("reports provider errors without response-body leakage", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
+      fetchImpl: async () => new Response("secret provider body", { status: 403 }),
     });
 
-    await expect(
-      client.stream({
-        systemPrompt: undefined,
-        messages: [{ role: "user", content: "hi" }],
-        onDelta: () => undefined,
-      }),
-    ).rejects.toThrow("The Gemini API returned HTTP 403.");
-  });
-
-  it("handles stream error event gracefully", async () => {
-    const streamBody = sseEvent("error", {
-      error: { message: "quota exceeded" },
-      event_type: "error",
-    });
-    const encoder = new TextEncoder();
-    const client = new GeminiInteractionsClient({
-      apiKey: "gemini-test-key",
-      model: "gemini-3.7-flash",
-      fetchImpl: async () => {
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode(streamBody));
-            controller.close();
-          },
-        });
-        return new Response(stream, { status: 200 });
-      },
-    });
-
-    await expect(
-      client.stream({
-        systemPrompt: undefined,
-        messages: [{ role: "user", content: "hi" }],
-        onDelta: () => undefined,
-      }),
-    ).rejects.toThrow("The Gemini stream reported an error event.");
+    await expect(client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined,
+    })).rejects.toEqual(new LlmProviderError("The LLM provider returned HTTP 403."));
   });
 });

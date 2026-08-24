@@ -10,7 +10,7 @@ import { createDatabaseConnection } from "./db/client.js";
 import { NeonConversationStore } from "./db/conversation-store.js";
 import { NeonLogSink } from "./db/log-sink.js";
 import { attachDiscordMessageHandler } from "./discord.js";
-import { GeminiInteractionsClient } from "./llm.js";
+import { OpenAICompatibleClient } from "./llm.js";
 import { consoleLogger, createLogger, summarizeError } from "./logging.js";
 
 async function main(): Promise<void> {
@@ -44,10 +44,9 @@ async function main(): Promise<void> {
   const conversationStore = new NeonConversationStore(database.db);
   logger.info("Neon database connection is ready.");
 
-  const llm = new GeminiInteractionsClient({
+  const llm = new OpenAICompatibleClient({
     apiKey: config.llmApiKey,
     model: config.llmModel,
-    thinkingLevel: config.thinkingLevel,
     baseUrl: config.llmBaseUrl,
   });
   const conversations = new ConversationService(llm, {
