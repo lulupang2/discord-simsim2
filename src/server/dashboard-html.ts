@@ -456,7 +456,12 @@ export function getDashboardHtml(): string {
             <input type="text" id="set-model" class="chat-input" placeholder="예: qwen/qwen3.8-max-free">
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
+            최대 응답 토큰 (16~8192)
             <input type="number" id="set-max-tokens" class="chat-input" min="16" max="8192">
+          </label>
+          <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
+            <input type="checkbox" id="set-enable-thinking" style="width:16px; height:16px;">
+            추론 모드 사용 (reasoning 모델 전용 — 끄면 응답이 빨라짐)
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             시스템 프롬프트 (말투·페르소나)
@@ -495,7 +500,7 @@ export function getDashboardHtml(): string {
         document.getElementById('set-model').value = s.model || '';
         document.getElementById('set-max-tokens').value = s.maxTokens || '';
         document.getElementById('set-system-prompt').value = s.systemPrompt || '';
-        document.getElementById('set-key-masked').innerText = s.apiKeyMasked ? '(현재: ' + s.apiKeyMasked + ')' : '';
+        document.getElementById('set-enable-thinking').checked = Boolean(s.enableThinking);
         document.getElementById('set-status').innerText = s.source === 'file' ? '저장된 설정 사용 중' : '.env 기본값 사용 중';
       } catch (err) {
         console.error('Failed to load settings', err);
@@ -517,6 +522,7 @@ export function getDashboardHtml(): string {
       if (model) payload.model = model;
       if (Number.isFinite(maxTokens) && maxTokens > 0) payload.maxTokens = maxTokens;
       if (systemPrompt !== '') payload.systemPrompt = systemPrompt;
+      payload.enableThinking = document.getElementById('set-enable-thinking').checked;
       try {
         const res = await fetch('/api/settings', {
           method: 'PUT',

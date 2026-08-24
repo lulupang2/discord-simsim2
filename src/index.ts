@@ -68,6 +68,7 @@ async function main(): Promise<void> {
     apiKey: config.llmApiKey,
     model: config.llmModel,
     maxTokens: config.llmMaxTokens,
+    enableThinking: true,
     systemPrompt: config.systemPrompt,
   };
   try {
@@ -78,6 +79,7 @@ async function main(): Promise<void> {
         apiKey: saved.apiKey,
         model: saved.model,
         maxTokens: saved.maxTokens,
+        enableThinking: saved.enableThinking,
       });
       conversations.setSystemPrompt(saved.systemPrompt);
       logger.info("Loaded saved runtime settings.", { model: saved.model, baseUrl: saved.baseUrl });

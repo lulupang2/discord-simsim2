@@ -120,5 +120,35 @@ describe("OpenAICompatibleClient", () => {
       max_tokens: 300,
     });
   });
+
+  it("sends enable_thinking false when disabled in provider settings", async () => {
+    let capturedInit: RequestInit | undefined;
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
+      maxTokens: 300,
+      enableThinking: false,
+      fetchImpl: async (_input, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "빠른 답변" } }],
+        }), { status: 200 });
+      },
+    });
+
+    await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "질문" }],
+      onDelta: () => undefined,
+    });
+
+    expect(JSON.parse(String(capturedInit?.body))).toEqual({
+      model: "qwen/qwen3.8-max-free",
+      messages: [{ role: "user", content: "질문" }],
+      max_tokens: 300,
+      enable_thinking: false,
+    });
+  });
 });
 

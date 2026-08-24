@@ -6,6 +6,7 @@ export interface BotSettings {
   readonly apiKey: string;
   readonly model: string;
   readonly maxTokens: number;
+  readonly enableThinking: boolean;
   readonly systemPrompt: string | undefined;
 }
 
@@ -38,6 +39,9 @@ export function validateSettings(candidate: BotSettings): void {
   if (!Number.isSafeInteger(candidate.maxTokens) || candidate.maxTokens < 16 || candidate.maxTokens > 8192) {
     throw new SettingsValidationError("maxTokens must be an integer between 16 and 8192.");
   }
+  if (typeof candidate.enableThinking !== "boolean") {
+    throw new SettingsValidationError("enableThinking must be a boolean.");
+  }
 }
 
 export function maskApiKey(apiKey: string): string {
@@ -69,6 +73,7 @@ export class FileSettingsStore {
         apiKey: String(parsed.apiKey ?? ""),
         model: String(parsed.model ?? ""),
         maxTokens: Number(parsed.maxTokens),
+        enableThinking: parsed.enableThinking === undefined ? true : Boolean(parsed.enableThinking),
         systemPrompt: parsed.systemPrompt === null ? undefined : parsed.systemPrompt,
       };
       validateSettings(settings);

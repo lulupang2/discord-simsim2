@@ -63,6 +63,7 @@ describe("Elysia Admin Server", () => {
       apiKey: "test-key-12345678",
       model: "qwen/qwen3.8-max-free",
       maxTokens: 300,
+      enableThinking: true,
     }),
     updateProviderSettings: vi.fn(),
     testConnection: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +86,7 @@ describe("Elysia Admin Server", () => {
     apiKey: "env-key-12345678",
     model: "qwen/qwen3.8-max-free",
     maxTokens: 300,
+    enableThinking: true,
     systemPrompt: "system prompt",
   };
   const mockConversations = {

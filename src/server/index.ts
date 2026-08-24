@@ -178,6 +178,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         baseUrl: settings.baseUrl,
         model: settings.model,
         maxTokens: settings.maxTokens,
+        enableThinking: settings.enableThinking,
         systemPrompt: settings.systemPrompt ?? null,
         apiKeyMasked: maskApiKey(llm.getProviderSettings().apiKey),
         source: saved === undefined ? "env" : "file",
@@ -192,6 +193,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           apiKey: body.apiKey?.trim() || current.apiKey,
           model: body.model?.trim() || current.model,
           maxTokens: body.maxTokens ?? current.maxTokens,
+          enableThinking: body.enableThinking ?? current.enableThinking,
           systemPrompt: body.systemPrompt === undefined || body.systemPrompt === null
             ? current.systemPrompt
             : (body.systemPrompt.trim().length === 0 ? undefined : body.systemPrompt),
@@ -207,9 +209,10 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         const previousProvider = llm.getProviderSettings();
         llm.updateProviderSettings({
           baseUrl: candidate.baseUrl,
-          apiKey: candidate.apiKey,
           model: candidate.model,
+          apiKey: candidate.apiKey,
           maxTokens: candidate.maxTokens,
+          enableThinking: candidate.enableThinking,
         });
 
         try {
@@ -235,6 +238,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
             baseUrl: candidate.baseUrl,
             model: candidate.model,
             maxTokens: candidate.maxTokens,
+            enableThinking: candidate.enableThinking,
             systemPrompt: candidate.systemPrompt ?? null,
             apiKeyMasked: maskApiKey(candidate.apiKey),
           },
@@ -246,6 +250,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           apiKey: t.Optional(t.String()),
           model: t.Optional(t.String()),
           maxTokens: t.Optional(t.Integer()),
+          enableThinking: t.Optional(t.Boolean()),
           systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
         }),
       },

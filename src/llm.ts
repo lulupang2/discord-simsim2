@@ -20,6 +20,7 @@ export interface LlmProviderSettings {
   readonly apiKey: string;
   readonly model: string;
   readonly maxTokens: number | undefined;
+  readonly enableThinking: boolean;
 }
 
 export interface LlmProviderControl extends LlmStreamClient {
@@ -36,6 +37,7 @@ export interface OpenAICompatibleClientOptions {
   readonly baseUrl: string;
   readonly fetchImpl?: FetchLike;
   readonly maxTokens?: number;
+  readonly enableThinking?: boolean;
   readonly sleepImpl?: (milliseconds: number) => Promise<void>;
 }
 
@@ -52,6 +54,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
   #endpoint: string;
   #fetch: FetchLike;
   #maxTokens: number | undefined;
+  #enableThinking: boolean;
   #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: OpenAICompatibleClientOptions) {
@@ -61,6 +64,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#sleep = options.sleepImpl ?? sleep;
     this.#maxTokens = options.maxTokens;
+    this.#enableThinking = options.enableThinking ?? true;
   }
 
   getProviderSettings(): LlmProviderSettings {
@@ -69,6 +73,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
       apiKey: this.#apiKey,
       model: this.#model,
       maxTokens: this.#maxTokens,
+      enableThinking: this.#enableThinking,
     };
   }
 
@@ -77,6 +82,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     this.#model = settings.model;
     this.#endpoint = `${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     this.#maxTokens = settings.maxTokens;
+    this.#enableThinking = settings.enableThinking;
   }
 
   async testConnection(): Promise<void> {
@@ -84,6 +90,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
       model: this.#model,
       messages: [{ role: "user", content: "ping" }],
       max_tokens: 16,
+      ...(this.#enableThinking ? {} : { enable_thinking: false }),
     }));
     if (!response.ok) {
       throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
@@ -102,6 +109,9 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     const body: Record<string, unknown> = { model: this.#model, messages };
     if (this.#maxTokens !== undefined) {
       body.max_tokens = this.#maxTokens;
+    }
+    if (!this.#enableThinking) {
+      body.enable_thinking = false;
     }
     const response = await this.#fetchWithRetry(JSON.stringify(body));
 
