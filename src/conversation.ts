@@ -9,6 +9,12 @@ import {
 export const USER_FAILURE_MESSAGE =
   "Sorry, I couldn't generate a response right now. Please try again.";
 
+const UNKNOWN_SPEAKER_NAME = "사용자";
+
+export const SPEAKER_NOTE =
+  "[참고] 대화 기록의 사용자 발화는 '이름: 내용' 형식이다. 이름을 보고 발화자를 구분해서 답변해.";
+
+
 export interface ConversationTransport extends StreamableChannelTransport {
   sendFailureNotice(content: string): Promise<void>;
 }
@@ -18,6 +24,7 @@ export interface ConversationRequest {
   readonly guildId: string | null;
   readonly userId: string;
   readonly botUserId: string;
+  readonly userDisplayName: string;
   readonly prompt: string;
   readonly transport: ConversationTransport;
 }
@@ -27,6 +34,7 @@ export interface ConversationExchange {
   readonly guildId: string | null;
   readonly userId: string;
   readonly botUserId: string;
+  readonly userDisplayName: string;
   readonly userMessage: string;
   readonly assistantMessage: string;
 }
@@ -35,10 +43,17 @@ export interface RelevantContext {
   readonly role: ChatRole;
   readonly content: string;
   readonly createdAt?: Date;
+  readonly authorName?: string | null;
+}
+
+export interface HistoryTurn {
+  readonly role: ChatRole;
+  readonly content: string;
+  readonly authorName?: string | null;
 }
 
 export interface ConversationStore {
-  getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]>;
+  getRecent(channelId: string, limit: number): Promise<readonly HistoryTurn[]>;
   appendExchange(exchange: ConversationExchange): Promise<void>;
   findRelevant?(query: string, options?: { channelId?: string; limit?: number }): Promise<readonly RelevantContext[]>;
 }
@@ -101,7 +116,7 @@ export class ConversationService {
       });
     }
 
-    let history: readonly ChatMessage[];
+    let history: readonly HistoryTurn[];
     let relevantContext: readonly RelevantContext[] = [];
     try {
       const [recentHistory, context] = await Promise.all([
@@ -121,9 +136,21 @@ export class ConversationService {
       return;
     }
 
-    const systemPrompt = this.#buildSystemPromptWithContext(relevantContext);
-    const userMessage: ChatMessage = { role: "user", content: request.prompt };
-    const messages = [...history, userMessage];
+    const speakerName = request.userDisplayName.trim().length > 0
+      ? request.userDisplayName.trim()
+      : UNKNOWN_SPEAKER_NAME;
+    const baseSystemPrompt = this.#buildSystemPromptWithContext(relevantContext);
+    const systemPrompt = baseSystemPrompt === undefined || baseSystemPrompt.trim().length === 0
+      ? SPEAKER_NOTE
+      : `${baseSystemPrompt}\n\n${SPEAKER_NOTE}`;
+    const historyMessages: ChatMessage[] = history.map((turn) => ({
+      role: turn.role,
+      content: turn.role === "user"
+        ? `${turn.authorName?.trim() || UNKNOWN_SPEAKER_NAME}: ${turn.content}`
+        : turn.content,
+    }));
+    const userMessage: ChatMessage = { role: "user", content: `${speakerName}: ${request.prompt}` };
+    const messages = [...historyMessages, userMessage];
     const writer = new LiveStreamWriter(request.transport, this.#streamOptions);
 
     let response: string;
@@ -136,7 +163,7 @@ export class ConversationService {
         },
       });
     } catch (error) {
-      this.#logger.error("Gemini stream completion failed.", {
+      this.#logger.error("LLM stream completion failed.", {
         channelId: request.channelId,
         error: summarizeError(error),
       });
@@ -161,6 +188,7 @@ export class ConversationService {
         guildId: request.guildId,
         userId: request.userId,
         botUserId: request.botUserId,
+        userDisplayName: speakerName,
         userMessage: request.prompt,
         assistantMessage: response,
       });
@@ -178,7 +206,8 @@ export class ConversationService {
     }
 
     const contextSnippet = relevantContext
-      .map((item) => `[과거 기록] ${item.role === "user" ? "사용자" : "어시스턴트"}: ${item.content}`)
+      .map((item) =>
+        `[과거 기록] ${item.role === "user" ? item.authorName ?? UNKNOWN_SPEAKER_NAME : "어시스턴트"}: ${item.content}`)
       .join("\n");
 
     const contextPrompt = `[참고: 관련된 과거 채널 대화 및 지식]\n${contextSnippet}\n위 과거 대화와 지식을 필요시 자연스럽게 참고하여 답변해.`;

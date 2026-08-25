@@ -8,6 +8,13 @@
       "when": 1787587528724,
       "tag": "0000_flawless_joshua_kane",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787657091709,
+      "tag": "0001_add_author_name",
+      "breakpoints": true
     }
   ]
 }

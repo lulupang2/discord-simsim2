@@ -91,11 +91,15 @@ export function attachDiscordMessageHandler(
     }
 
     const transport = createTransport(message.channel);
+    const userDisplayName = message.member?.displayName
+      ?? message.author.globalName
+      ?? message.author.username;
     void conversations.handle({
       channelId: message.channelId,
       guildId: message.guildId,
       userId: message.author.id,
       botUserId,
+      userDisplayName,
       prompt,
       transport,
     }).catch((error: unknown) => {

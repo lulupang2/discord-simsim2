@@ -176,6 +176,8 @@ export function getDashboardHtml(): string {
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-main); }
     .btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+    .btn-danger { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+    .btn-danger:hover { background: rgba(248, 81, 73, 0.3); }
 
     /* Tables & Lists */
     .data-table {
@@ -473,6 +475,33 @@ export function getDashboardHtml(): string {
           </div>
         </div>
       </div>
+      <div class="card" style="margin-top:1rem;">
+        <div class="card-header">
+          <div class="card-title">💾 설정 프리셋</div>
+          <span style="color:var(--text-dim); font-size:0.8rem;">폼 값을 이름 붙여 저장하고, 언제든 불러와서 연결 테스트 후 적용할 수 있습니다</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:0.9rem;">
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="preset-name-input" class="chat-input" placeholder="프리셋 이름 (예: qwen-free)" style="flex:1; max-width:720px;">
+            <button class="btn btn-primary" onclick="savePreset(event)">현재 폼 값으로 저장</button>
+            <button class="btn btn-secondary" onclick="loadPresets()">새로고침</button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th width="180">이름</th>
+                <th width="220">모델</th>
+                <th>Base URL · API Key · 프롬프트</th>
+                <th width="270">관리</th>
+              </tr>
+            </thead>
+            <tbody id="preset-table-body">
+              <tr><td colspan="4" style="text-align:center; color:var(--text-dim);">저장된 프리셋이 없습니다.</td></tr>
+            </tbody>
+          </table>
+          <span id="preset-status" style="font-size:0.85rem; color:var(--text-dim);"></span>
+        </div>
+      </div>
     </div>
 
   </main>
@@ -489,7 +518,7 @@ export function getDashboardHtml(): string {
       event.target.classList.add('active');
       if (tabId === 'tab-messages') loadMessages();
       if (tabId === 'tab-logs') loadLogs();
-      if (tabId === 'tab-settings') loadSettings();
+      if (tabId === 'tab-settings') { loadSettings(); loadPresets(); }
     }
 
     async function loadSettings() {
@@ -511,18 +540,7 @@ export function getDashboardHtml(): string {
       e.preventDefault();
       const status = document.getElementById('set-status');
       status.innerText = '연결 테스트 중...';
-      const payload = {};
-      const baseUrl = document.getElementById('set-base-url').value.trim();
-      const apiKey = document.getElementById('set-api-key').value.trim();
-      const model = document.getElementById('set-model').value.trim();
-      const maxTokens = Number(document.getElementById('set-max-tokens').value);
-      const systemPrompt = document.getElementById('set-system-prompt').value;
-      if (baseUrl) payload.baseUrl = baseUrl;
-      if (apiKey) payload.apiKey = apiKey;
-      if (model) payload.model = model;
-      if (Number.isFinite(maxTokens) && maxTokens > 0) payload.maxTokens = maxTokens;
-      if (systemPrompt !== '') payload.systemPrompt = systemPrompt;
-      payload.enableThinking = document.getElementById('set-enable-thinking').checked;
+      const payload = collectSettingsForm();
       try {
         const res = await fetch('/api/settings', {
           method: 'PUT',
@@ -536,6 +554,129 @@ export function getDashboardHtml(): string {
           loadSettings();
         } else {
           status.innerText = '❌ ' + (data.error || '저장 실패');
+        }
+      } catch (err) {
+        status.innerText = '❌ 요청 실패: ' + err;
+      }
+    }
+
+    function collectSettingsForm() {
+      const payload = {};
+      const baseUrl = document.getElementById('set-base-url').value.trim();
+      const apiKey = document.getElementById('set-api-key').value.trim();
+      const model = document.getElementById('set-model').value.trim();
+      const maxTokens = Number(document.getElementById('set-max-tokens').value);
+      const systemPrompt = document.getElementById('set-system-prompt').value;
+      if (baseUrl) payload.baseUrl = baseUrl;
+      if (apiKey) payload.apiKey = apiKey;
+      if (model) payload.model = model;
+      if (Number.isFinite(maxTokens) && maxTokens > 0) payload.maxTokens = maxTokens;
+      if (systemPrompt !== '') payload.systemPrompt = systemPrompt;
+      payload.enableThinking = document.getElementById('set-enable-thinking').checked;
+      return payload;
+    }
+
+    let PRESETS = [];
+
+    async function loadPresets() {
+      try {
+        const res = await fetch('/api/settings/presets');
+        const data = await res.json();
+        PRESETS = data.presets || [];
+        const body = document.getElementById('preset-table-body');
+        if (!PRESETS.length) {
+          body.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-dim);">저장된 프리셋이 없습니다.</td></tr>';
+          return;
+        }
+        body.innerHTML = PRESETS.map((p, i) => \`
+          <tr>
+            <td style="font-weight:600;">\${escapeHtml(p.name)}</td>
+            <td style="font-family:'JetBrains Mono'; font-size:0.8rem;">\${escapeHtml(p.model)}</td>
+            <td style="color:var(--text-dim); font-size:0.8rem;">\${escapeHtml(p.baseUrl)} · \${escapeHtml(p.apiKeyMasked)}\${p.systemPrompt ? ' · 프롬프트 있음' : ''}</td>
+            <td>
+              <button class="btn btn-primary" style="padding:0.25rem 0.6rem; font-size:0.75rem;" onclick="applyPreset(\${i})">적용</button>
+              <button class="btn btn-secondary" style="padding:0.25rem 0.6rem; font-size:0.75rem;" onclick="fillFormFromPreset(\${i})">불러오기</button>
+              <button class="btn btn-danger" style="padding:0.25rem 0.6rem; font-size:0.75rem;" onclick="deletePreset(\${i})">삭제</button>
+            </td>
+          </tr>
+        \`).join('');
+      } catch (err) {
+        console.error('Failed to load presets', err);
+      }
+    }
+
+    async function savePreset(e) {
+      e.preventDefault();
+      const status = document.getElementById('preset-status');
+      const name = document.getElementById('preset-name-input').value.trim();
+      if (!name) {
+        status.innerText = '❌ 프리셋 이름을 입력하세요.';
+        return;
+      }
+      const payload = collectSettingsForm();
+      try {
+        const res = await fetch('/api/settings/presets/' + encodeURIComponent(name), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          status.innerText = '✅ 프리셋 저장 완료: ' + data.name + ' (같은 이름이면 기존 내용을 덮어씀)';
+          loadPresets();
+        } else {
+          status.innerText = '❌ ' + (data.error || '프리셋 저장 실패');
+        }
+      } catch (err) {
+        status.innerText = '❌ 요청 실패: ' + err;
+      }
+    }
+
+    async function applyPreset(i) {
+      const preset = PRESETS[i];
+      if (!preset) return;
+      if (!confirm("'" + preset.name + "' 프리셋을 적용할까요? 연결 테스트 성공 시에만 반영됩니다.")) return;
+      const status = document.getElementById('preset-status');
+      status.innerText = '연결 테스트 중...';
+      try {
+        const res = await fetch('/api/settings/presets/' + encodeURIComponent(preset.name) + '/apply', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          status.innerText = '✅ 프리셋 적용 완료 (' + data.settings.model + ')';
+          loadSettings();
+        } else {
+          status.innerText = '❌ ' + (data.error || '프리셋 적용 실패');
+        }
+      } catch (err) {
+        status.innerText = '❌ 요청 실패: ' + err;
+      }
+    }
+
+    async function fillFormFromPreset(i) {
+      const preset = PRESETS[i];
+      if (!preset) return;
+      document.getElementById('set-base-url').value = preset.baseUrl || '';
+      document.getElementById('set-model').value = preset.model || '';
+      document.getElementById('set-max-tokens').value = preset.maxTokens || '';
+      document.getElementById('set-system-prompt').value = preset.systemPrompt || '';
+      document.getElementById('set-enable-thinking').checked = Boolean(preset.enableThinking);
+      document.getElementById('preset-name-input').value = preset.name;
+      document.getElementById('preset-status').innerText = '프리셋을 폼에 불러왔습니다. 수정 후 같은 이름으로 저장하면 내용이 수정됩니다.';
+    }
+
+    async function deletePreset(i) {
+      const preset = PRESETS[i];
+      if (!preset) return;
+      if (!confirm("'" + preset.name + "' 프리셋을 삭제할까요?")) return;
+      const status = document.getElementById('preset-status');
+      try {
+        const res = await fetch('/api/settings/presets/' + encodeURIComponent(preset.name), { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          status.innerText = '🗑️ 삭제 완료: ' + preset.name;
+          loadPresets();
+        } else {
+          status.innerText = '❌ ' + (data.error || '프리셋 삭제 실패');
         }
       } catch (err) {
         status.innerText = '❌ 요청 실패: ' + err;

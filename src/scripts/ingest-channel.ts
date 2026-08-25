@@ -50,6 +50,7 @@ async function main(): Promise<void> {
       channelId: string;
       guildId?: string | null;
       authorId: string;
+      authorName: string | null;
       role: "user" | "assistant";
       content: string;
       createdAt: Date;
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
           channelId: msg.channelId,
           guildId: msg.guildId,
           authorId: msg.author.id,
+          authorName: isBot ? null : msg.author.globalName ?? msg.author.username,
           role: isBot ? "assistant" : "user",
           content: msg.content,
           createdAt: msg.createdAt,

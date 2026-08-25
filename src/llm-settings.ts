@@ -67,15 +67,7 @@ export class FileSettingsStore {
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<BotSettings>;
-      const settings: BotSettings = {
-        baseUrl: String(parsed.baseUrl ?? ""),
-        apiKey: String(parsed.apiKey ?? ""),
-        model: String(parsed.model ?? ""),
-        maxTokens: Number(parsed.maxTokens),
-        enableThinking: parsed.enableThinking === undefined ? true : Boolean(parsed.enableThinking),
-        systemPrompt: parsed.systemPrompt === null ? undefined : parsed.systemPrompt,
-      };
+      const settings = coerceBotSettings(JSON.parse(raw) as Partial<BotSettings>);
       validateSettings(settings);
       return settings;
     } catch (error) {
@@ -90,6 +82,99 @@ export class FileSettingsStore {
     const temporaryPath = `${this.#filePath}.tmp`;
     await mkdir(dirname(this.#filePath), { recursive: true });
     await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+    await rename(temporaryPath, this.#filePath);
+  }
+}
+
+function coerceBotSettings(parsed: Partial<BotSettings>): BotSettings {
+  return {
+    baseUrl: String(parsed.baseUrl ?? ""),
+    apiKey: String(parsed.apiKey ?? ""),
+    model: String(parsed.model ?? ""),
+    maxTokens: Number(parsed.maxTokens),
+    enableThinking: parsed.enableThinking === undefined ? true : Boolean(parsed.enableThinking),
+    systemPrompt: parsed.systemPrompt === null ? undefined : parsed.systemPrompt,
+  };
+}
+
+const MAX_PRESET_NAME_LENGTH = 60;
+const PRESET_NAME_CONTROL_CHARS = /[\u0000-\u001f]/;
+
+export function validatePresetName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    throw new SettingsValidationError("Preset name must not be blank.");
+  }
+  if (trimmed.length > MAX_PRESET_NAME_LENGTH) {
+    throw new SettingsValidationError(`Preset name must be at most ${MAX_PRESET_NAME_LENGTH} characters.`);
+  }
+  if (PRESET_NAME_CONTROL_CHARS.test(trimmed)) {
+    throw new SettingsValidationError("Preset name must not contain control characters.");
+  }
+  return trimmed;
+}
+
+export type SettingsPresets = Record<string, BotSettings>;
+
+export class SettingsPresetsStore {
+  readonly #filePath: string;
+
+  constructor(filePath: string) {
+    this.#filePath = filePath;
+  }
+
+  async load(): Promise<SettingsPresets> {
+    let raw: string;
+    try {
+      raw = await readFile(this.#filePath, "utf8");
+    } catch {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<SettingsPresets>;
+      const presets: SettingsPresets = {};
+      for (const [name, value] of Object.entries(parsed)) {
+        if (value === undefined || typeof value !== "object") {
+          continue;
+        }
+        try {
+          const settings = coerceBotSettings(value);
+          validateSettings(settings);
+          presets[name] = settings;
+        } catch {
+          // 하나의 깨진 항목이 대시보드 전체를 막지 않도록 건너뛴다.
+        }
+      }
+      return presets;
+    } catch {
+      return {};
+    }
+  }
+
+  async set(name: string, settings: BotSettings): Promise<string> {
+    const presetName = validatePresetName(name);
+    validateSettings(settings);
+    const presets = await this.load();
+    presets[presetName] = settings;
+    await this.#write(presets);
+    return presetName;
+  }
+
+  async delete(name: string): Promise<boolean> {
+    const presets = await this.load();
+    if (!(name in presets)) {
+      return false;
+    }
+    delete presets[name];
+    await this.#write(presets);
+    return true;
+  }
+
+  async #write(presets: SettingsPresets): Promise<void> {
+    const temporaryPath = `${this.#filePath}.tmp`;
+    await mkdir(dirname(this.#filePath), { recursive: true });
+    await writeFile(temporaryPath, `${JSON.stringify(presets, null, 2)}\n`, "utf8");
     await rename(temporaryPath, this.#filePath);
   }
 }

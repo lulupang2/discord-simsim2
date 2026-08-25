@@ -8,7 +8,13 @@ import type { ConversationService } from "../conversation.js";
 import type { NeonConversationStore } from "../db/conversation-store.js";
 import type { LlmProviderControl } from "../llm.js";
 import type { Logger } from "../logging.js";
-import { maskApiKey, validateSettings, type BotSettings, type FileSettingsStore } from "../llm-settings.js";
+import {
+  maskApiKey,
+  validateSettings,
+  type BotSettings,
+  type FileSettingsStore,
+  type SettingsPresetsStore,
+} from "../llm-settings.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 
 export interface ElysiaServerOptions {
@@ -18,6 +24,7 @@ export interface ElysiaServerOptions {
   readonly llm: LlmProviderControl;
   readonly conversations: ConversationService;
   readonly settingsStore: FileSettingsStore;
+  readonly presetsStore: SettingsPresetsStore;
   readonly defaultSettings: BotSettings;
   readonly client: Client;
   readonly logger: Logger;
@@ -25,7 +32,7 @@ export interface ElysiaServerOptions {
 
 
 export function createElysiaServer(options: ElysiaServerOptions) {
-  const { port, config, store, llm, conversations, settingsStore, defaultSettings, client, logger } = options;
+  const { port, config, store, llm, conversations, settingsStore, presetsStore, defaultSettings, client, logger } = options;
 
   const app = new Elysia({ adapter: node() })
     .use(cors())
@@ -188,17 +195,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       "/api/settings",
       async ({ body, set }) => {
         const current = (await settingsStore.load()) ?? defaultSettings;
-        const candidate: BotSettings = {
-          baseUrl: body.baseUrl?.trim() || current.baseUrl,
-          apiKey: body.apiKey?.trim() || current.apiKey,
-          model: body.model?.trim() || current.model,
-          maxTokens: body.maxTokens ?? current.maxTokens,
-          enableThinking: body.enableThinking ?? current.enableThinking,
-          systemPrompt: body.systemPrompt === undefined || body.systemPrompt === null
-            ? current.systemPrompt
-            : (body.systemPrompt.trim().length === 0 ? undefined : body.systemPrompt),
-        };
-
+        const candidate = mergeSettingsBody(body, current);
         try {
           validateSettings(candidate);
         } catch (error) {
@@ -254,9 +251,138 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
         }),
       },
+    )
+    // 9. Saved settings presets (추가 / 수정 / 삭제 / 적용)
+    .get("/api/settings/presets", async () => {
+      const presets = await presetsStore.load();
+      return {
+        presets: Object.entries(presets).map(([name, preset]) => ({
+          name,
+          baseUrl: preset.baseUrl,
+          model: preset.model,
+          maxTokens: preset.maxTokens,
+          enableThinking: preset.enableThinking,
+          systemPrompt: preset.systemPrompt ?? null,
+          apiKeyMasked: maskApiKey(preset.apiKey),
+        })),
+      };
+    })
+    .put(
+      "/api/settings/presets/:name",
+      async ({ body, params, set }) => {
+        const current = (await settingsStore.load()) ?? defaultSettings;
+        const candidate = mergeSettingsBody(body, current);
+        try {
+          await presetsStore.set(params.name, candidate);
+        } catch (error) {
+          set.status = 400;
+          return { error: error instanceof Error ? error.message : "프리셋 저장 실패" };
+        }
+        logger.info("Settings preset saved.", { name: params.name.trim(), model: candidate.model });
+        return { ok: true, name: params.name.trim() };
+      },
+      { params: t.Object({ name: t.String() }), body: t.Object({
+        baseUrl: t.Optional(t.String()),
+        apiKey: t.Optional(t.String()),
+        model: t.Optional(t.String()),
+        maxTokens: t.Optional(t.Integer()),
+        enableThinking: t.Optional(t.Boolean()),
+        systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
+      }) },
+    )
+    .post(
+      "/api/settings/presets/:name/apply",
+      async ({ params, set }) => {
+        const presets = await presetsStore.load();
+        const preset = presets[params.name];
+        if (preset === undefined) {
+          set.status = 404;
+          return { error: "해당 이름의 프리셋이 없습니다." };
+        }
+
+        const previousProvider = llm.getProviderSettings();
+        llm.updateProviderSettings({
+          baseUrl: preset.baseUrl,
+          model: preset.model,
+          apiKey: preset.apiKey,
+          maxTokens: preset.maxTokens,
+          enableThinking: preset.enableThinking,
+        });
+
+        try {
+          await llm.testConnection();
+        } catch (error) {
+          llm.updateProviderSettings(previousProvider);
+          set.status = 502;
+          return { error: `LLM 연결 테스트 실패, 프리셋을 적용하지 않았습니다: ${error instanceof Error ? error.message : String(error)}` };
+        }
+
+        conversations.setSystemPrompt(preset.systemPrompt);
+        try {
+          await settingsStore.save(preset);
+        } catch (error) {
+          set.status = 500;
+          return { error: `설정 파일 저장 실패: ${error instanceof Error ? error.message : String(error)}` };
+        }
+
+        logger.info("Settings preset applied.", { name: params.name, model: preset.model, baseUrl: preset.baseUrl });
+        return {
+          ok: true,
+          settings: {
+            baseUrl: preset.baseUrl,
+            model: preset.model,
+            maxTokens: preset.maxTokens,
+            enableThinking: preset.enableThinking,
+            systemPrompt: preset.systemPrompt ?? null,
+            apiKeyMasked: maskApiKey(preset.apiKey),
+          },
+        };
+      },
+      { params: t.Object({ name: t.String() }) },
+    )
+    .delete(
+      "/api/settings/presets/:name",
+      async ({ params, set }) => {
+        let removed: boolean;
+        try {
+          removed = await presetsStore.delete(params.name);
+        } catch (error) {
+          set.status = 500;
+          return { error: `프리셋 삭제 실패: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        if (!removed) {
+          set.status = 404;
+          return { error: "해당 이름의 프리셋이 없습니다." };
+        }
+        logger.info("Settings preset deleted.", { name: params.name });
+        return { ok: true };
+      },
+      { params: t.Object({ name: t.String() }) },
     );
 
   app.listen(port);
   logger.info(`Elysia Web Dashboard server listening on http://0.0.0.0:${port}`);
   return app;
+}
+
+interface SettingsRequestBody {
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  maxTokens?: number;
+  enableThinking?: boolean;
+  systemPrompt?: string | null;
+}
+
+function mergeSettingsBody(body: SettingsRequestBody, current: BotSettings): BotSettings {
+  return {
+    baseUrl: body.baseUrl?.trim() || current.baseUrl,
+    apiKey: body.apiKey?.trim() || current.apiKey,
+    model: body.model?.trim() || current.model,
+    maxTokens: body.maxTokens ?? current.maxTokens,
+    enableThinking: body.enableThinking ?? current.enableThinking,
+    systemPrompt: body.systemPrompt === undefined || body.systemPrompt === null
+      ? current.systemPrompt
+      : (body.systemPrompt.trim().length === 0 ? undefined : body.systemPrompt),
+  };
 }

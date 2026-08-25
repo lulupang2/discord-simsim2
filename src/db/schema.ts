@@ -19,6 +19,7 @@ export const messages = pgTable(
     channelId: text("channel_id").notNull(),
     guildId: text("guild_id"),
     authorId: text("author_id").notNull(),
+    authorName: text("author_name"),
     role: messageRole("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

@@ -4,7 +4,11 @@ import type { BotConfig } from "../src/config.js";
 import type { NeonConversationStore } from "../src/db/conversation-store.js";
 import type { LlmProviderControl } from "../src/llm.js";
 import type { ConversationService } from "../src/conversation.js";
-import { FileSettingsStore, type BotSettings } from "../src/llm-settings.js";
+import {
+  FileSettingsStore,
+  SettingsPresetsStore,
+  type BotSettings,
+} from "../src/llm-settings.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "discord.js";
@@ -81,6 +85,7 @@ describe("Elysia Admin Server", () => {
   } as unknown as Logger;
 
   const settingsStore = new FileSettingsStore(join(tmpdir(), `simsim-settings-test-${process.pid}.json`));
+  const presetsStore = new SettingsPresetsStore(join(tmpdir(), `simsim-presets-test-${process.pid}.json`));
   const defaultSettings: BotSettings = {
     baseUrl: "https://api.tokenrouter.com/v1",
     apiKey: "env-key-12345678",
@@ -100,6 +105,7 @@ describe("Elysia Admin Server", () => {
     llm: mockLlm as unknown as LlmProviderControl,
     conversations: mockConversations,
     settingsStore,
+    presetsStore,
     defaultSettings,
     client: mockClient,
     logger: mockLogger,
@@ -229,5 +235,92 @@ describe("Elysia Admin Server", () => {
     const data = await res.json();
     expect(data.error).toContain("baseUrl");
     expect(mockLlm.testConnection).not.toHaveBeenCalled();
+  });
+
+  it("saves a preset and lists it with a masked api key", async () => {
+    const put = await app.handle(
+      new Request(`http://localhost/api/settings/presets/${encodeURIComponent("내 프리셋")}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: "https://api.preset.example/v1",
+          apiKey: "sk-preset-key-123456",
+          model: "preset-model",
+          maxTokens: 1024,
+          enableThinking: false,
+          systemPrompt: "프리셋 프롬프트",
+        }),
+      }),
+    );
+    expect(put.status).toBe(200);
+    expect((await put.json())).toMatchObject({ ok: true, name: "내 프리셋" });
+
+    const list = await app.handle(new Request("http://localhost/api/settings/presets"));
+    expect(list.status).toBe(200);
+    const listData = await list.json();
+    const found = listData.presets.find((preset: { name: string }) => preset.name === "내 프리셋");
+    expect(found).toMatchObject({
+      baseUrl: "https://api.preset.example/v1",
+      model: "preset-model",
+      maxTokens: 1024,
+      enableThinking: false,
+      systemPrompt: "프리셋 프롬프트",
+    });
+    expect(found.apiKeyMasked).toContain("…");
+  });
+
+  it("applies a preset after a successful connection test and persists it as active", async () => {
+    mockLlm.updateProviderSettings.mockClear();
+    const res = await app.handle(
+      new Request(`http://localhost/api/settings/presets/${encodeURIComponent("내 프리셋")}/apply`, { method: "POST" }),
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.settings.model).toBe("preset-model");
+    expect(mockLlm.updateProviderSettings).toHaveBeenCalledTimes(1);
+    expect(mockConversations.setSystemPrompt).toHaveBeenCalledWith("프리셋 프롬프트");
+    await expect(settingsStore.load()).resolves.toMatchObject({ model: "preset-model" });
+  });
+
+  it("reverts provider settings when a preset fails the connection test", async () => {
+    mockLlm.updateProviderSettings.mockClear();
+    mockLlm.testConnection.mockRejectedValueOnce(new Error("HTTP 503"));
+    const res = await app.handle(
+      new Request(`http://localhost/api/settings/presets/${encodeURIComponent("내 프리셋")}/apply`, { method: "POST" }),
+    );
+    expect(res.status).toBe(502);
+    expect(mockLlm.updateProviderSettings).toHaveBeenCalledTimes(2);
+    await expect(settingsStore.load()).resolves.toMatchObject({ model: "preset-model" });
+  });
+
+  it("returns 404 when applying or deleting a missing preset", async () => {
+    const applied = await app.handle(
+      new Request("http://localhost/api/settings/presets/missing-preset/apply", { method: "POST" }),
+    );
+    expect(applied.status).toBe(404);
+    const deleted = await app.handle(
+      new Request("http://localhost/api/settings/presets/missing-preset", { method: "DELETE" }),
+    );
+    expect(deleted.status).toBe(404);
+  });
+
+  it("deletes an existing preset exactly once", async () => {
+    const url = `http://localhost/api/settings/presets/${encodeURIComponent("내 프리셋")}`;
+    const deleted = await app.handle(new Request(url, { method: "DELETE" }));
+    expect(deleted.status).toBe(200);
+    const list = await app.handle(new Request("http://localhost/api/settings/presets"));
+    const listData = await list.json();
+    expect(listData.presets.find((preset: { name: string }) => preset.name === "내 프리셋")).toBeUndefined();
+  });
+
+  it("rejects a blank preset name with 400", async () => {
+    const res = await app.handle(
+      new Request("http://localhost/api/settings/presets/%20%20", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(res.status).toBe(400);
   });
 });

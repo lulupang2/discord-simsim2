@@ -13,7 +13,11 @@ import { NeonConversationStore } from "./db/conversation-store.js";
 import { NeonLogSink } from "./db/log-sink.js";
 import { attachDiscordMessageHandler } from "./discord.js";
 import { OpenAICompatibleClient } from "./llm.js";
-import { FileSettingsStore, type BotSettings } from "./llm-settings.js";
+import {
+  FileSettingsStore,
+  SettingsPresetsStore,
+  type BotSettings,
+} from "./llm-settings.js";
 import { consoleLogger, createLogger, summarizeError } from "./logging.js";
 import { createElysiaServer } from "./server/index.js";
 
@@ -63,6 +67,9 @@ async function main(): Promise<void> {
   const settingsStore = new FileSettingsStore(
     join(dirname(fileURLToPath(import.meta.url)), "../llm-settings.json"),
   );
+  const presetsStore = new SettingsPresetsStore(
+    join(dirname(fileURLToPath(import.meta.url)), "../llm-settings-presets.json"),
+  );
   const defaultSettings: BotSettings = {
     baseUrl: config.llmBaseUrl,
     apiKey: config.llmApiKey,
@@ -107,6 +114,7 @@ async function main(): Promise<void> {
     llm,
     conversations,
     settingsStore,
+    presetsStore,
     defaultSettings,
     client,
     logger,

@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ConversationService,
+  SPEAKER_NOTE,
   USER_FAILURE_MESSAGE,
   type ConversationExchange,
   type ConversationRequest,
   type ConversationStore,
   type ConversationTransport,
+  type HistoryTurn,
 } from "../src/conversation.js";
 import type {
   ChatMessage,
@@ -46,18 +48,26 @@ class RecordingClient implements LlmStreamClient {
 
 class RecordingStore implements ConversationStore {
   readonly exchanges: ConversationExchange[] = [];
-  readonly #messages = new Map<string, ChatMessage[]>();
-  relevantResults: Array<{ role: "user" | "assistant"; content: string }> = [];
+  readonly #messages = new Map<string, HistoryTurn[]>();
+  relevantResults: Array<{
+    role: "user" | "assistant";
+    content: string;
+    authorName?: string | null;
+  }> = [];
 
   constructor(
     private readonly failReads = false,
     private readonly failWrites = false,
   ) {}
 
-  async findRelevant(_query: string): Promise<readonly { role: "user" | "assistant"; content: string }[]> {
+  async findRelevant(_query: string): Promise<readonly {
+    role: "user" | "assistant";
+    content: string;
+    authorName?: string | null;
+  }[]> {
     return this.relevantResults;
   }
-  async getRecent(channelId: string, limit: number): Promise<readonly ChatMessage[]> {
+  async getRecent(channelId: string, limit: number): Promise<readonly HistoryTurn[]> {
     if (this.failReads) {
       throw new Error("database read unavailable");
     }
@@ -75,12 +85,12 @@ class RecordingStore implements ConversationStore {
     const messages = this.#messages.get(exchange.channelId) ?? [];
     this.#messages.set(exchange.channelId, [
       ...messages,
-      { role: "user", content: exchange.userMessage },
+      { role: "user", content: exchange.userMessage, authorName: exchange.userDisplayName },
       { role: "assistant", content: exchange.assistantMessage },
     ]);
   }
 
-  getAll(channelId: string): readonly ChatMessage[] {
+  getAll(channelId: string): readonly HistoryTurn[] {
     return (this.#messages.get(channelId) ?? []).map((entry) => ({ ...entry }));
   }
 }
@@ -150,6 +160,7 @@ function request(
     guildId: "guild",
     userId: "user",
     botUserId: "bot",
+    userDisplayName: "테스터",
     prompt,
     transport,
   };
@@ -174,22 +185,22 @@ describe("ConversationService", () => {
     await service.handle(request("A", "A-three", channelA));
 
     expect(llm.requests.map((entry) => entry.systemPrompt)).toEqual([
-      "system instruction",
-      "system instruction",
-      "system instruction",
-      "system instruction",
+      `system instruction\n\n${SPEAKER_NOTE}`,
+      `system instruction\n\n${SPEAKER_NOTE}`,
+      `system instruction\n\n${SPEAKER_NOTE}`,
+      `system instruction\n\n${SPEAKER_NOTE}`,
     ]);
-    expect(llm.requests[0]?.messages).toEqual([message("user", "A-one")]);
+    expect(llm.requests[0]?.messages).toEqual([message("user", "테스터: A-one")]);
     expect(llm.requests[1]?.messages).toEqual([
-      message("user", "A-one"),
+      message("user", "테스터: A-one"),
       message("assistant", "answer-1"),
-      message("user", "A-two"),
+      message("user", "테스터: A-two"),
     ]);
-    expect(llm.requests[2]?.messages).toEqual([message("user", "B-one")]);
+    expect(llm.requests[2]?.messages).toEqual([message("user", "테스터: B-one")]);
     expect(llm.requests[3]?.messages).toEqual([
-      message("user", "A-two"),
+      message("user", "테스터: A-two"),
       message("assistant", "answer-2"),
-      message("user", "A-three"),
+      message("user", "테스터: A-three"),
     ]);
     expect(store.getAll("A")).toHaveLength(6);
     expect(store.getAll("B")).toHaveLength(2);
@@ -218,7 +229,7 @@ describe("ConversationService", () => {
 
     expect(transport.failureNotices).toEqual([USER_FAILURE_MESSAGE]);
     expect(transport.initialSends).toEqual(["recovered"]);
-    expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
+    expect(llm.requests[1]?.messages).toEqual([message("user", "테스터: next prompt")]);
     expect(store.exchanges).toHaveLength(1);
   });
 
@@ -246,7 +257,7 @@ describe("ConversationService", () => {
     await service.handle(request("channel", "next prompt", healthyTransport));
 
     expect(failingTransport.failureNotices).toEqual([USER_FAILURE_MESSAGE]);
-    expect(llm.requests[1]?.messages).toEqual([message("user", "next prompt")]);
+    expect(llm.requests[1]?.messages).toEqual([message("user", "테스터: next prompt")]);
     expect(store.exchanges).toHaveLength(1);
   });
 
@@ -323,7 +334,7 @@ describe("ConversationService", () => {
     const llm = new RecordingClient(async () => "contextual answer");
     const store = new RecordingStore();
     store.relevantResults = [
-      { role: "user", content: "우리 집 강아지 이름은 멍멍이야" },
+      { role: "user", content: "우리 집 강아지 이름은 멍멍이야", authorName: "과거의철수" },
       { role: "assistant", content: "기억해둘게요!" },
     ];
     const transport = new RecordingTransport();
@@ -338,8 +349,8 @@ describe("ConversationService", () => {
 
     expect(llm.requests).toHaveLength(1);
     expect(llm.requests[0]?.systemPrompt).toContain("기본 시스템 프롬프트");
-    expect(llm.requests[0]?.systemPrompt).toContain("우리 집 강아지 이름은 멍멍이야");
-    expect(llm.requests[0]?.systemPrompt).toContain("기억해둘게요!");
+    expect(llm.requests[0]?.systemPrompt).toContain("[과거 기록] 과거의철수: 우리 집 강아지 이름은 멍멍이야");
+    expect(llm.requests[0]?.systemPrompt).toContain("[과거 기록] 어시스턴트: 기억해둘게요!");
   });
 
   it("contains a database read failure before calling the LLM", async () => {
@@ -381,5 +392,35 @@ describe("ConversationService", () => {
       "Conversation history persistence failed.",
       expect.objectContaining({ channelId: "channel" }),
     );
+  });
+
+  it("attributes each user turn with its display name so speakers stay distinguishable", async () => {
+    const llm = new RecordingClient(async (_request, callIndex) => `answer-${callIndex + 1}`);
+    const store = new RecordingStore();
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 10,
+      systemPrompt: undefined,
+      store,
+      logger: createLogger(),
+    });
+    const transport = new RecordingTransport();
+
+    await service.handle({ ...request("channel", "안녕", transport), userDisplayName: "철수" });
+    await service.handle({ ...request("channel", "또 안녕", transport), userDisplayName: "영희" });
+    await service.handle({ ...request("channel2", "야", transport), userDisplayName: "   " });
+
+    expect(llm.requests[0]?.messages).toEqual([message("user", "철수: 안녕")]);
+    expect(llm.requests[1]?.messages).toEqual([
+      message("user", "철수: 안녕"),
+      message("assistant", "answer-1"),
+      message("user", "영희: 또 안녕"),
+    ]);
+    expect(llm.requests[2]?.messages).toEqual([message("user", "사용자: 야")]);
+    expect(store.getAll("channel")).toEqual([
+      { role: "user", content: "안녕", authorName: "철수" },
+      { role: "assistant", content: "answer-1" },
+      { role: "user", content: "또 안녕", authorName: "영희" },
+      { role: "assistant", content: "answer-2" },
+    ]);
   });
 });

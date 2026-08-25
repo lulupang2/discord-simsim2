@@ -2,6 +2,7 @@ import { and, asc, count, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type {
   ConversationExchange,
   ConversationStore,
+  HistoryTurn,
   RelevantContext,
 } from "../conversation.js";
 import type { ChatMessage } from "../llm.js";
@@ -30,9 +31,13 @@ export class NeonConversationStore implements ConversationStore {
   public async getRecent(
     channelId: string,
     limit: number,
-  ): Promise<readonly ChatMessage[]> {
+  ): Promise<readonly HistoryTurn[]> {
     const rows = await this.db
-      .select({ role: messages.role, content: messages.content })
+      .select({
+        role: messages.role,
+        content: messages.content,
+        authorName: messages.authorName,
+      })
       .from(messages)
       .where(eq(messages.channelId, channelId))
       .orderBy(desc(messages.createdAt), desc(messages.id))
@@ -47,6 +52,7 @@ export class NeonConversationStore implements ConversationStore {
         channelId: exchange.channelId,
         guildId: exchange.guildId,
         authorId: exchange.userId,
+        authorName: exchange.userDisplayName.trim().length > 0 ? exchange.userDisplayName : null,
         role: "user",
         content: exchange.userMessage,
       },
@@ -82,6 +88,7 @@ export class NeonConversationStore implements ConversationStore {
         role: messages.role,
         content: messages.content,
         createdAt: messages.createdAt,
+        authorName: messages.authorName,
       })
       .from(messages)
       .where(whereClause)
@@ -153,6 +160,7 @@ export class NeonConversationStore implements ConversationStore {
       channelId: string;
       guildId?: string | null;
       authorId: string;
+      authorName?: string | null;
       role: "user" | "assistant";
       content: string;
       createdAt?: Date;
@@ -172,6 +180,7 @@ export class NeonConversationStore implements ConversationStore {
           channelId: m.channelId,
           guildId: m.guildId ?? null,
           authorId: m.authorId,
+          authorName: m.authorName ?? null,
           role: m.role,
           content: m.content,
           createdAt: m.createdAt ?? new Date(),
