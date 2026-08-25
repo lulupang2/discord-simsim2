@@ -10,6 +10,7 @@
 - **실행 사용자**: `work:work`
 - **배포 경로**: `/home/work/discord-bot`
 - **환경 파일**: `/home/work/discord-bot/.env` (권한 `600`)
+- **웹 대시보드 포트**: `http://45.151.152.179:23006`
 
 ---
 
@@ -40,6 +41,10 @@ sudo journalctl -u discord-bot -n 50 --no-pager
 sudo journalctl -u discord-bot -p err --since today --no-pager
 ```
 
+### 2.3. 웹 대시보드 운영
+- 브라우저에서 `http://45.151.152.179:23006` 접속.
+- `⚙️ 설정` 탭에서 모델, 프롬프트, 웹검색 토글을 변경하고 `저장` 또는 `프리셋 적용`을 누르면 **서버 재시작 없이 봇에 즉시 반영**됨.
+
 ---
 
 ## 3. 트러블슈팅 가이드 (Troubleshooting)
@@ -56,13 +61,19 @@ sudo journalctl -u discord-bot -p err --since today --no-pager
 - **원인 2**: Neon 프로젝트가 일시 중지(Compute suspended)되었거나 네트워크가 차단된 경우.
   - 해결: Neon 콘솔에서 인스턴스 활성 상태를 확인하고 `sslmode=require` 파라미터가 포함되어 있는지 점검한다.
 
-### 3.3. `Gemini stream completion failed` 오류
-- **원인 1**: `LLM_API_KEY`가 유효하지 않거나 만료된 경우.
-  - 해결: Google AI Studio에서 새 API 키를 발급받아 교체한다.
-- **원인 2**: 할당량(Quota) 초과 또는 429 Rate Limit.
-  - 해결: AI Studio 콘솔에서 사용량 및 결제 계정 한도를 확인한다.
+### 3.3. `LLM provider returned HTTP 404: No endpoints available matching your guardrail restrictions and data policy`
+- **원인**: OpenRouter 계정의 Privacy 설정에서 **Zero Data Retention (ZDR)** 또는 **Non-frontier** 제한이 켜져 있어서 해당 모델의 유일한 라우트가 차단된 경우.
+  - 해결: [OpenRouter Privacy Settings](https://openrouter.ai/settings/privacy)에서 `Zero Data Retention -> Non-frontier` 토글을 **OFF**로 전환한다.
 
-### 3.4. 봇이 서버 채팅에 무반응인 경우
-- **체크 1**: 봇에게 `@안내견` 멘션을 포함해서 말했는지 확인 (멘션 없는 일반 채팅은 의도적으로 무시됨).
+### 3.4. `LLM stream completion failed / No text response` 오류
+- **원인 1**: `LLM_API_KEY`가 유효하지 않거나 만료/크레딧 부족인 경우.
+  - 해결: OpenRouter 또는 TokenRouter 콘솔에서 새 API 키를 발급받고 잔여 크레딧을 확인한다.
+- **원인 2**: 할당량(Quota) 초과 또는 429 Rate Limit.
+  - 해결: 사용량 및 결제 계정 한도를 확인한다.
+- **원인 3**: 모델명이 틀린 경우.
+  - 해결: Solar Pro 4의 경우 `upstage/solar-pro4`로 정확히 입력한다 (`solar-pro-4` 아님).
+
+### 3.5. 봇이 서버 채팅에 무반응인 경우
+- **체크 1**: 봇에게 `@답장` 멘션을 포함해서 말했는지 확인 (멘션 없는 일반 채팅은 의도적으로 무시됨).
 - **체크 2**: 1:1 개인 DM을 열어서 멘션 없이 말 걸어본다.
-- **체크 3**: 봇의 채널 권한(메시지 읽기, 메시지 보내기, 메시지 기록 보기)이 부여되었는지 확인.
+- **체크 3**: 봇의 채널 권한(메시지 읽기, 메시지 보내기, 메시지 기록 보기, 파일 첨부)이 부여되었는지 확인.
