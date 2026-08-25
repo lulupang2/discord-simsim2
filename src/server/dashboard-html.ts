@@ -447,7 +447,8 @@ export function getDashboardHtml(): string {
         <div style="display:flex; flex-direction:column; gap:0.9rem; max-width:720px;">
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             Base URL
-            <input type="text" id="set-base-url" class="chat-input" placeholder="https://api.example.com/v1">
+            <input type="text" id="set-base-url" class="chat-input" placeholder="예: https://openrouter.ai/api/v1">
+            <span style="color:var(--text-dim); font-size:0.75rem;">OpenRouter는 <code>https://openrouter.ai/api/v1</code>를 입력해. <code>/chat/completions</code>은 자동 처리됨.</span>
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             API Key <span id="set-key-masked" style="color:var(--text-dim);"></span>

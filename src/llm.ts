@@ -60,7 +60,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
   constructor(options: OpenAICompatibleClientOptions) {
     this.#apiKey = options.apiKey;
     this.#model = options.model;
-    this.#endpoint = `${options.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    this.#endpoint = chatCompletionsEndpoint(options.baseUrl);
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#sleep = options.sleepImpl ?? sleep;
     this.#maxTokens = options.maxTokens;
@@ -69,7 +69,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
 
   getProviderSettings(): LlmProviderSettings {
     return {
-      baseUrl: this.#endpoint.replace(/\/chat\/completions$/, ""),
+      baseUrl: baseUrlFromChatCompletionsEndpoint(this.#endpoint),
       apiKey: this.#apiKey,
       model: this.#model,
       maxTokens: this.#maxTokens,
@@ -80,7 +80,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
   updateProviderSettings(settings: LlmProviderSettings): void {
     this.#apiKey = settings.apiKey;
     this.#model = settings.model;
-    this.#endpoint = `${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    this.#endpoint = chatCompletionsEndpoint(settings.baseUrl);
     this.#maxTokens = settings.maxTokens;
     this.#enableThinking = settings.enableThinking;
   }
@@ -93,7 +93,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
       ...(this.#enableThinking ? {} : { enable_thinking: false }),
     }));
     if (!response.ok) {
-      throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
+      throw await providerHttpError(response);
     }
     try {
       await response.json();
@@ -116,7 +116,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     const response = await this.#fetchWithRetry(JSON.stringify(body));
 
     if (!response.ok) {
-      throw new LlmProviderError(`The LLM provider returned HTTP ${response.status}.`);
+      throw await providerHttpError(response);
     }
 
     let payload: unknown;
@@ -166,6 +166,54 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     }
     throw new LlmProviderError("Could not reach the LLM provider.");
   }
+}
+
+const CHAT_COMPLETIONS_PATH = "/chat/completions";
+
+function chatCompletionsEndpoint(baseUrl: string): string {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  return normalizedBaseUrl.endsWith(CHAT_COMPLETIONS_PATH)
+    ? normalizedBaseUrl
+    : `${normalizedBaseUrl}${CHAT_COMPLETIONS_PATH}`;
+}
+
+function baseUrlFromChatCompletionsEndpoint(endpoint: string): string {
+  return endpoint.endsWith(CHAT_COMPLETIONS_PATH)
+    ? endpoint.slice(0, -CHAT_COMPLETIONS_PATH.length)
+    : endpoint;
+}
+
+async function providerHttpError(response: Response): Promise<LlmProviderError> {
+  const providerMessage = await readProviderErrorMessage(response);
+  return new LlmProviderError(
+    providerMessage === undefined
+      ? `The LLM provider returned HTTP ${response.status}.`
+      : `The LLM provider returned HTTP ${response.status}: ${providerMessage}`,
+  );
+}
+
+async function readProviderErrorMessage(response: Response): Promise<string | undefined> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return undefined;
+  }
+
+  if (typeof payload !== "object" || payload === null || !("error" in payload)) {
+    return undefined;
+  }
+  const error = payload.error;
+  if (
+    typeof error !== "object"
+    || error === null
+    || !("message" in error)
+    || typeof error.message !== "string"
+  ) {
+    return undefined;
+  }
+  const message = error.message.trim();
+  return message.length === 0 ? undefined : message.slice(0, 500);
 }
 
 function readCompletionContent(payload: unknown): string | undefined {

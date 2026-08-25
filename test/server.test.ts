@@ -118,6 +118,8 @@ describe("Elysia Admin Server", () => {
     const html = await res.text();
     expect(html).toContain("Dapjang Admin");
     expect(html).toContain("답장");
+    expect(html).toContain("설정 프리셋");
+    expect(html).toContain("/api/settings/presets");
   });
 
   it("returns health status on /health", async () => {

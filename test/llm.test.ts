@@ -92,6 +92,49 @@ describe("OpenAICompatibleClient", () => {
       onDelta: () => undefined,
     })).rejects.toEqual(new LlmProviderError("The LLM provider returned HTTP 403."));
   });
+
+  it("includes the structured provider error message without exposing raw response bodies", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "deepseek/deepseek-v4-flash-vision-exp",
+      baseUrl: "https://openrouter.ai/api/v1",
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: { message: "No endpoints found that support this model." },
+      }), { status: 404 }),
+    });
+
+    await expect(client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined,
+    })).rejects.toEqual(
+      new LlmProviderError("The LLM provider returned HTTP 404: No endpoints found that support this model."),
+    );
+  });
+
+  it("does not duplicate a supplied chat completions path", async () => {
+    let capturedUrl: string | undefined;
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "test-model",
+      baseUrl: "https://openrouter.ai/api/v1/chat/completions/",
+      fetchImpl: async (input) => {
+        capturedUrl = input;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "ok" } }],
+        }), { status: 200 });
+      },
+    });
+
+    await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined,
+    });
+
+    expect(capturedUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(client.getProviderSettings().baseUrl).toBe("https://openrouter.ai/api/v1");
+  });
   it("includes max_tokens in the request body when configured", async () => {
     let capturedInit: RequestInit | undefined;
     const client = new OpenAICompatibleClient({
