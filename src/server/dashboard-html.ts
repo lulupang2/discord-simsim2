@@ -385,6 +385,26 @@ export function getDashboardHtml(): string {
           </tbody>
         </table>
       </div>
+      <div class="card" style="margin-top:1rem;">
+        <div class="card-header">
+          <div class="card-title">사용자 채팅 스타일 분석</div>
+          <span style="color:var(--text-dim); font-size:0.8rem;">최근 발화를 기준으로 자동 계산된 참고 프로필. 최소 3개 발화가 필요합니다.</span>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th width="180">사용자</th>
+              <th width="100">표본</th>
+              <th width="130">말투</th>
+              <th width="130">평균 길이</th>
+              <th>질문 · 감탄 · 이모지 · 자주 쓰는 표현</th>
+            </tr>
+          </thead>
+          <tbody id="user-style-table-body">
+            <tr><td colspan="5" style="text-align:center; color:var(--text-dim);">대화 기록을 분석 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- Tab 3: Logs -->
@@ -456,7 +476,7 @@ export function getDashboardHtml(): string {
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             모델명
-            <input type="text" id="set-model" class="chat-input" placeholder="예: qwen/qwen3.8-max-free">
+            <input type="text" id="set-model" class="chat-input" placeholder="예: upstage/solar-pro4">
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             최대 응답 토큰 (16~8192)
@@ -465,6 +485,10 @@ export function getDashboardHtml(): string {
           <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
             <input type="checkbox" id="set-enable-thinking" style="width:16px; height:16px;">
             추론 모드 사용 (reasoning 모델 전용 — 끄면 응답이 빨라짐)
+          </label>
+          <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
+            <input type="checkbox" id="set-enable-web-search" style="width:16px; height:16px;">
+            OpenRouter 웹검색 자동 사용 (필요한 질문에만 검색 · 검색 비용 발생)
           </label>
           <label style="display:flex; flex-direction:column; gap:0.3rem; font-size:0.85rem;">
             시스템 프롬프트 (말투·페르소나)
@@ -531,6 +555,7 @@ export function getDashboardHtml(): string {
         document.getElementById('set-max-tokens').value = s.maxTokens || '';
         document.getElementById('set-system-prompt').value = s.systemPrompt || '';
         document.getElementById('set-enable-thinking').checked = Boolean(s.enableThinking);
+        document.getElementById('set-enable-web-search').checked = Boolean(s.enableWebSearch);
         document.getElementById('set-status').innerText = s.source === 'file' ? '저장된 설정 사용 중' : '.env 기본값 사용 중';
       } catch (err) {
         console.error('Failed to load settings', err);
@@ -574,6 +599,7 @@ export function getDashboardHtml(): string {
       if (Number.isFinite(maxTokens) && maxTokens > 0) payload.maxTokens = maxTokens;
       if (systemPrompt !== '') payload.systemPrompt = systemPrompt;
       payload.enableThinking = document.getElementById('set-enable-thinking').checked;
+      payload.enableWebSearch = document.getElementById('set-enable-web-search').checked;
       return payload;
     }
 
@@ -593,7 +619,7 @@ export function getDashboardHtml(): string {
           <tr>
             <td style="font-weight:600;">\${escapeHtml(p.name)}</td>
             <td style="font-family:'JetBrains Mono'; font-size:0.8rem;">\${escapeHtml(p.model)}</td>
-            <td style="color:var(--text-dim); font-size:0.8rem;">\${escapeHtml(p.baseUrl)} · \${escapeHtml(p.apiKeyMasked)}\${p.systemPrompt ? ' · 프롬프트 있음' : ''}</td>
+            <td style="color:var(--text-dim); font-size:0.8rem;">\${escapeHtml(p.baseUrl)} · \${escapeHtml(p.apiKeyMasked)}\${p.enableWebSearch ? ' · 웹검색' : ''}\${p.systemPrompt ? ' · 프롬프트 있음' : ''}</td>
             <td>
               <button class="btn btn-primary" style="padding:0.25rem 0.6rem; font-size:0.75rem;" onclick="applyPreset(\${i})">적용</button>
               <button class="btn btn-secondary" style="padding:0.25rem 0.6rem; font-size:0.75rem;" onclick="fillFormFromPreset(\${i})">불러오기</button>
@@ -661,6 +687,7 @@ export function getDashboardHtml(): string {
       document.getElementById('set-max-tokens').value = preset.maxTokens || '';
       document.getElementById('set-system-prompt').value = preset.systemPrompt || '';
       document.getElementById('set-enable-thinking').checked = Boolean(preset.enableThinking);
+      document.getElementById('set-enable-web-search').checked = Boolean(preset.enableWebSearch);
       document.getElementById('preset-name-input').value = preset.name;
       document.getElementById('preset-status').innerText = '프리셋을 폼에 불러왔습니다. 수정 후 같은 이름으로 저장하면 내용이 수정됩니다.';
     }
@@ -721,8 +748,52 @@ export function getDashboardHtml(): string {
 
         const messagesBody = document.getElementById('messages-table-body');
         if (messagesBody) messagesBody.innerHTML = renderRows(data.items);
+        void loadUserStyles(channel.trim());
+
       } catch (err) {
         console.error('Failed to load messages', err);
+      }
+    }
+    async function loadUserStyles(channelId) {
+      try {
+        const url = channelId
+          ? '/api/user-styles?channelId=' + encodeURIComponent(channelId)
+          : '/api/user-styles';
+        const res = await fetch(url);
+        const data = await res.json();
+        const body = document.getElementById('user-style-table-body');
+        if (!body) return;
+        if (!data.items || data.items.length === 0) {
+          body.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-dim);">분석할 사용자 발화가 부족합니다.</td></tr>';
+          return;
+        }
+        const speechLevel = {
+          casual: '반말 중심',
+          polite: '존댓말 중심',
+          mixed: '혼용',
+          neutral: '뚜렷하지 않음',
+        };
+        const messageLength = {
+          short: '짧음',
+          medium: '보통',
+          long: '김',
+        };
+        body.innerHTML = data.items.map(item => {
+          const style = item.style;
+          const user = item.authorName || item.authorId;
+          const markers = style.frequentMarkers.length === 0 ? '-' : style.frequentMarkers.join(', ');
+          return \`
+            <tr>
+              <td style="font-weight:600;">\${escapeHtml(user)}</td>
+              <td>\${style.sampleSize}개</td>
+              <td>\${speechLevel[style.speechLevel]}</td>
+              <td>\${style.averageCharacters}자 · \${messageLength[style.messageLength]}</td>
+              <td>\${style.questionRate}% · \${style.exclamationRate}% · \${style.emojiRate}% · \${escapeHtml(markers)}</td>
+            </tr>
+          \`;
+        }).join('');
+      } catch (err) {
+        console.error('Failed to load user chat styles', err);
       }
     }
 

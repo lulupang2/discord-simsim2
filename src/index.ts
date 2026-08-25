@@ -76,6 +76,7 @@ async function main(): Promise<void> {
     model: config.llmModel,
     maxTokens: config.llmMaxTokens,
     enableThinking: true,
+    enableWebSearch: false,
     systemPrompt: config.systemPrompt,
   };
   try {
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
         model: saved.model,
         maxTokens: saved.maxTokens,
         enableThinking: saved.enableThinking,
+        enableWebSearch: saved.enableWebSearch,
       });
       conversations.setSystemPrompt(saved.systemPrompt);
       logger.info("Loaded saved runtime settings.", { model: saved.model, baseUrl: saved.baseUrl });

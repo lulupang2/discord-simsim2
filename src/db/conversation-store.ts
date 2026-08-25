@@ -1,4 +1,5 @@
 import { and, asc, count, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { analyzeUserChatStyle, type UserChatStyle } from "../chat-style.js";
 import type {
   ConversationExchange,
   ConversationStore,
@@ -25,6 +26,12 @@ export interface ConversationStats {
   readonly latestMessage: Date | null;
 }
 
+export interface UserChatStyleSummary {
+  readonly authorId: string;
+  readonly authorName: string | null;
+  readonly style: UserChatStyle;
+}
+
 export class NeonConversationStore implements ConversationStore {
   public constructor(private readonly db: Database) {}
 
@@ -44,6 +51,70 @@ export class NeonConversationStore implements ConversationStore {
       .limit(limit);
 
     return rows.reverse();
+  }
+
+  public async getUserChatStyle(
+    userId: string,
+    options?: { channelId?: string; limit?: number },
+  ): Promise<UserChatStyle | undefined> {
+    const limit = options?.limit ?? 100;
+    const userMessagesFilter = options?.channelId === undefined
+      ? and(eq(messages.authorId, userId), eq(messages.role, "user"))
+      : and(
+        eq(messages.authorId, userId),
+        eq(messages.role, "user"),
+        eq(messages.channelId, options.channelId),
+      );
+    const rows = await this.db
+      .select({ content: messages.content })
+      .from(messages)
+      .where(userMessagesFilter)
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit);
+
+    return analyzeUserChatStyle(rows.map((row) => row.content));
+  }
+
+  public async listUserChatStyles(options?: {
+    channelId?: string;
+    limit?: number;
+  }): Promise<readonly UserChatStyleSummary[]> {
+    const limit = options?.limit ?? 1_000;
+    const rows = await this.db
+      .select({
+        authorId: messages.authorId,
+        authorName: messages.authorName,
+        content: messages.content,
+      })
+      .from(messages)
+      .where(options?.channelId === undefined
+        ? eq(messages.role, "user")
+        : and(eq(messages.role, "user"), eq(messages.channelId, options.channelId)))
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit);
+
+    const messagesByAuthor = new Map<string, { authorName: string | null; messages: string[] }>();
+    for (const row of rows) {
+      const entry = messagesByAuthor.get(row.authorId);
+      if (entry === undefined) {
+        messagesByAuthor.set(row.authorId, {
+          authorName: row.authorName,
+          messages: [row.content],
+        });
+        continue;
+      }
+      entry.messages.push(row.content);
+      if (entry.authorName === null && row.authorName !== null) {
+        entry.authorName = row.authorName;
+      }
+    }
+
+    return [...messagesByAuthor.entries()]
+      .flatMap(([authorId, entry]) => {
+        const style = analyzeUserChatStyle(entry.messages);
+        return style === undefined ? [] : [{ authorId, authorName: entry.authorName, style }];
+      })
+      .sort((left, right) => right.style.sampleSize - left.style.sampleSize);
   }
 
   public async appendExchange(exchange: ConversationExchange): Promise<void> {

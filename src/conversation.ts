@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatRole, LlmStreamClient } from "./llm.js";
+import { formatUserChatStylePrompt, type UserChatStyle } from "./chat-style.js";
 import { consoleLogger, summarizeError, type Logger } from "./logging.js";
 import {
   LiveStreamWriter,
@@ -56,6 +57,10 @@ export interface ConversationStore {
   getRecent(channelId: string, limit: number): Promise<readonly HistoryTurn[]>;
   appendExchange(exchange: ConversationExchange): Promise<void>;
   findRelevant?(query: string, options?: { channelId?: string; limit?: number }): Promise<readonly RelevantContext[]>;
+  getUserChatStyle?(
+    userId: string,
+    options?: { channelId?: string; limit?: number },
+  ): Promise<UserChatStyle | undefined>;
 }
 
 export interface ConversationServiceOptions {
@@ -118,15 +123,28 @@ export class ConversationService {
 
     let history: readonly HistoryTurn[];
     let relevantContext: readonly RelevantContext[] = [];
+    let userChatStyle: UserChatStyle | undefined;
     try {
-      const [recentHistory, context] = await Promise.all([
+      const [recentHistory, context, style] = await Promise.all([
         this.#store.getRecent(request.channelId, this.#maxHistoryMessages),
         this.#store.findRelevant
           ? this.#store.findRelevant(request.prompt, { channelId: request.channelId, limit: 3 })
           : Promise.resolve([]),
+        this.#store.getUserChatStyle
+          ? this.#store.getUserChatStyle(request.userId, { channelId: request.channelId, limit: 100 })
+            .catch((error) => {
+              this.#logger.warn("User chat style analysis failed; continuing.", {
+                channelId: request.channelId,
+                userId: request.userId,
+                error: summarizeError(error),
+              });
+              return undefined;
+            })
+          : Promise.resolve(undefined),
       ]);
       history = recentHistory;
       relevantContext = context;
+      userChatStyle = style;
     } catch (error) {
       this.#logger.error("Conversation history load failed.", {
         channelId: request.channelId,
@@ -140,9 +158,11 @@ export class ConversationService {
       ? request.userDisplayName.trim()
       : UNKNOWN_SPEAKER_NAME;
     const baseSystemPrompt = this.#buildSystemPromptWithContext(relevantContext);
-    const systemPrompt = baseSystemPrompt === undefined || baseSystemPrompt.trim().length === 0
-      ? SPEAKER_NOTE
-      : `${baseSystemPrompt}\n\n${SPEAKER_NOTE}`;
+    const promptNotes = [baseSystemPrompt, SPEAKER_NOTE];
+    if (userChatStyle !== undefined) {
+      promptNotes.push(formatUserChatStylePrompt(userChatStyle));
+    }
+    const systemPrompt = promptNotes.filter((note) => note !== undefined && note.trim().length > 0).join("\n\n");
     const historyMessages: ChatMessage[] = history.map((turn) => ({
       role: turn.role,
       content: turn.role === "user"

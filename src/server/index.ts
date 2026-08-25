@@ -100,6 +100,26 @@ export function createElysiaServer(options: ElysiaServerOptions) {
       },
     )
 
+    // 5. Deterministic user chat-style analysis
+    .get(
+      "/api/user-styles",
+      async ({ query }) => {
+        const channelId = query.channelId?.trim() || undefined;
+        return {
+          items: await store.listUserChatStyles({
+            ...(channelId === undefined ? {} : { channelId }),
+            limit: Number(query.limit ?? "1000"),
+          }),
+        };
+      },
+      {
+        query: t.Object({
+          channelId: t.Optional(t.String()),
+          limit: t.Optional(t.String()),
+        }),
+      },
+    )
+
     // 5. System logs API (list & filter)
     .get(
       "/api/logs",
@@ -186,6 +206,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         model: settings.model,
         maxTokens: settings.maxTokens,
         enableThinking: settings.enableThinking,
+        enableWebSearch: settings.enableWebSearch,
         systemPrompt: settings.systemPrompt ?? null,
         apiKeyMasked: maskApiKey(llm.getProviderSettings().apiKey),
         source: saved === undefined ? "env" : "file",
@@ -210,6 +231,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           apiKey: candidate.apiKey,
           maxTokens: candidate.maxTokens,
           enableThinking: candidate.enableThinking,
+          enableWebSearch: candidate.enableWebSearch,
         });
 
         try {
@@ -236,6 +258,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
             model: candidate.model,
             maxTokens: candidate.maxTokens,
             enableThinking: candidate.enableThinking,
+            enableWebSearch: candidate.enableWebSearch,
             systemPrompt: candidate.systemPrompt ?? null,
             apiKeyMasked: maskApiKey(candidate.apiKey),
           },
@@ -248,6 +271,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           model: t.Optional(t.String()),
           maxTokens: t.Optional(t.Integer()),
           enableThinking: t.Optional(t.Boolean()),
+          enableWebSearch: t.Optional(t.Boolean()),
           systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
         }),
       },
@@ -262,6 +286,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           model: preset.model,
           maxTokens: preset.maxTokens,
           enableThinking: preset.enableThinking,
+          enableWebSearch: preset.enableWebSearch,
           systemPrompt: preset.systemPrompt ?? null,
           apiKeyMasked: maskApiKey(preset.apiKey),
         })),
@@ -287,6 +312,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
         model: t.Optional(t.String()),
         maxTokens: t.Optional(t.Integer()),
         enableThinking: t.Optional(t.Boolean()),
+        enableWebSearch: t.Optional(t.Boolean()),
         systemPrompt: t.Optional(t.Union([t.String(), t.Null()])),
       }) },
     )
@@ -307,6 +333,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
           apiKey: preset.apiKey,
           maxTokens: preset.maxTokens,
           enableThinking: preset.enableThinking,
+          enableWebSearch: preset.enableWebSearch,
         });
 
         try {
@@ -333,6 +360,7 @@ export function createElysiaServer(options: ElysiaServerOptions) {
             model: preset.model,
             maxTokens: preset.maxTokens,
             enableThinking: preset.enableThinking,
+            enableWebSearch: preset.enableWebSearch,
             systemPrompt: preset.systemPrompt ?? null,
             apiKeyMasked: maskApiKey(preset.apiKey),
           },
@@ -371,6 +399,7 @@ interface SettingsRequestBody {
   model?: string;
   maxTokens?: number;
   enableThinking?: boolean;
+  enableWebSearch?: boolean;
   systemPrompt?: string | null;
 }
 
@@ -381,6 +410,7 @@ function mergeSettingsBody(body: SettingsRequestBody, current: BotSettings): Bot
     model: body.model?.trim() || current.model,
     maxTokens: body.maxTokens ?? current.maxTokens,
     enableThinking: body.enableThinking ?? current.enableThinking,
+    enableWebSearch: body.enableWebSearch ?? current.enableWebSearch,
     systemPrompt: body.systemPrompt === undefined || body.systemPrompt === null
       ? current.systemPrompt
       : (body.systemPrompt.trim().length === 0 ? undefined : body.systemPrompt),

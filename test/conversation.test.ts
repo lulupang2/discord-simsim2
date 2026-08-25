@@ -9,6 +9,7 @@ import {
   type ConversationTransport,
   type HistoryTurn,
 } from "../src/conversation.js";
+import type { UserChatStyle } from "../src/chat-style.js";
 import type {
   ChatMessage,
   LlmStreamClient,
@@ -54,7 +55,7 @@ class RecordingStore implements ConversationStore {
     content: string;
     authorName?: string | null;
   }> = [];
-
+  userChatStyle: UserChatStyle | undefined;
   constructor(
     private readonly failReads = false,
     private readonly failWrites = false,
@@ -74,6 +75,10 @@ class RecordingStore implements ConversationStore {
     return (this.#messages.get(channelId) ?? [])
       .slice(-limit)
       .map((entry) => ({ ...entry }));
+  }
+
+  async getUserChatStyle(): Promise<UserChatStyle | undefined> {
+    return this.userChatStyle;
   }
 
   async appendExchange(exchange: ConversationExchange): Promise<void> {
@@ -351,6 +356,33 @@ describe("ConversationService", () => {
     expect(llm.requests[0]?.systemPrompt).toContain("기본 시스템 프롬프트");
     expect(llm.requests[0]?.systemPrompt).toContain("[과거 기록] 과거의철수: 우리 집 강아지 이름은 멍멍이야");
     expect(llm.requests[0]?.systemPrompt).toContain("[과거 기록] 어시스턴트: 기억해둘게요!");
+  });
+
+  it("adds a current user's analyzed chat style to the system prompt", async () => {
+    const llm = new RecordingClient(async () => "맞춤 답변");
+    const store = new RecordingStore();
+    store.userChatStyle = {
+      sampleSize: 12,
+      averageCharacters: 14,
+      speechLevel: "casual",
+      messageLength: "short",
+      questionRate: 50,
+      exclamationRate: 25,
+      emojiRate: 0,
+      frequentMarkers: ["ㅋㅋ", "ㅇㅇ"],
+    };
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 20,
+      systemPrompt: "기본 시스템 프롬프트",
+      store,
+      logger: createLogger(),
+    });
+
+    await service.handle(request("channel", "뭐함", new RecordingTransport()));
+
+    expect(llm.requests[0]?.systemPrompt).toContain("[현재 사용자 채팅 스타일 참고]");
+    expect(llm.requests[0]?.systemPrompt).toContain("분석 표본: 최근 12개 발화");
+    expect(llm.requests[0]?.systemPrompt).toContain("반말 중심");
   });
 
   it("contains a database read failure before calling the LLM", async () => {

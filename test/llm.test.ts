@@ -135,6 +135,66 @@ describe("OpenAICompatibleClient", () => {
     expect(capturedUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect(client.getProviderSettings().baseUrl).toBe("https://openrouter.ai/api/v1");
   });
+
+  it("enables OpenRouter web search and appends validated source citations", async () => {
+    let capturedInit: RequestInit | undefined;
+    const deltas: string[] = [];
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "upstage/solar-pro4",
+      baseUrl: "https://openrouter.ai/api/v1",
+      enableWebSearch: true,
+      fetchImpl: async (_input, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: "최신 정보를 찾았어.",
+              annotations: [
+                {
+                  type: "url_citation",
+                  url_citation: {
+                    url: "https://example.com/news",
+                    title: "Example News",
+                  },
+                },
+                {
+                  type: "url_citation",
+                  url_citation: {
+                    url: "javascript:alert(1)",
+                    title: "Unsafe",
+                  },
+                },
+              ],
+            },
+          }],
+        }), { status: 200 });
+      },
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "최신 뉴스 알려줘" }],
+      onDelta: (text) => {
+        deltas.push(text);
+      },
+    });
+
+    expect(JSON.parse(String(capturedInit?.body))).toMatchObject({
+      model: "upstage/solar-pro4",
+      tools: [{
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "auto",
+          max_results: 3,
+          max_uses: 1,
+          search_context_size: "low",
+        },
+      }],
+    });
+    expect(response).toBe("최신 정보를 찾았어.\n\n출처:\n- [Example News](https://example.com/news)");
+    expect(deltas).toEqual([response]);
+  });
   it("includes max_tokens in the request body when configured", async () => {
     let capturedInit: RequestInit | undefined;
     const client = new OpenAICompatibleClient({

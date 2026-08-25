@@ -50,6 +50,22 @@ describe("Elysia Admin Server", () => {
       ],
       total: 1,
     }),
+    listUserChatStyles: vi.fn().mockResolvedValue([
+      {
+        authorId: "u1",
+        authorName: "철수",
+        style: {
+          sampleSize: 8,
+          averageCharacters: 14,
+          speechLevel: "casual",
+          messageLength: "short",
+          questionRate: 25,
+          exclamationRate: 0,
+          emojiRate: 0,
+          frequentMarkers: ["ㅋㅋ"],
+        },
+      },
+    ]),
     listLogs: vi.fn().mockResolvedValue({
       items: [],
       total: 0,
@@ -68,6 +84,7 @@ describe("Elysia Admin Server", () => {
       model: "qwen/qwen3.8-max-free",
       maxTokens: 300,
       enableThinking: true,
+      enableWebSearch: false,
     }),
     updateProviderSettings: vi.fn(),
     testConnection: vi.fn().mockResolvedValue(undefined),
@@ -92,6 +109,7 @@ describe("Elysia Admin Server", () => {
     model: "qwen/qwen3.8-max-free",
     maxTokens: 300,
     enableThinking: true,
+    enableWebSearch: false,
     systemPrompt: "system prompt",
   };
   const mockConversations = {
@@ -119,7 +137,10 @@ describe("Elysia Admin Server", () => {
     expect(html).toContain("Dapjang Admin");
     expect(html).toContain("답장");
     expect(html).toContain("설정 프리셋");
+    expect(html).toContain("사용자 채팅 스타일 분석");
+    expect(html).toContain("OpenRouter 웹검색 자동 사용");
     expect(html).toContain("/api/settings/presets");
+    expect(html).toContain("/api/user-styles");
   });
 
   it("returns health status on /health", async () => {
@@ -145,6 +166,20 @@ describe("Elysia Admin Server", () => {
     const data = await res.json();
     expect(data.total).toBe(1);
     expect(data.items).toHaveLength(1);
+  });
+
+  it("returns deterministic user chat styles filtered by channel", async () => {
+    const res = await app.handle(new Request("http://localhost/api/user-styles?channelId=c1"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.items).toEqual([
+      expect.objectContaining({
+        authorId: "u1",
+        authorName: "철수",
+        style: expect.objectContaining({ speechLevel: "casual", sampleSize: 8 }),
+      }),
+    ]);
+    expect(mockStore.listUserChatStyles).toHaveBeenCalledWith({ channelId: "c1", limit: 1000 });
   });
 
   it("exports dataset as JSONL file on /api/dataset/export", async () => {
@@ -175,6 +210,7 @@ describe("Elysia Admin Server", () => {
     expect(data.source).toBe("env");
     expect(data.baseUrl).toBe("https://api.tokenrouter.com/v1");
     expect(data.model).toBe("qwen/qwen3.8-max-free");
+    expect(data.enableWebSearch).toBe(false);
     expect(data.apiKeyMasked).not.toContain("test-key");
     expect(data.apiKeyMasked).toContain("…");
   });
@@ -239,6 +275,38 @@ describe("Elysia Admin Server", () => {
     expect(mockLlm.testConnection).not.toHaveBeenCalled();
   });
 
+  it("enables OpenRouter web search only for OpenRouter settings", async () => {
+    const enabled = await app.handle(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: "https://openrouter.ai/api/v1",
+          apiKey: "sk-or-test-12345678",
+          model: "upstage/solar-pro4",
+          maxTokens: 512,
+          enableWebSearch: true,
+        }),
+      }),
+    );
+    expect(enabled.status).toBe(200);
+    expect((await enabled.json()).settings.enableWebSearch).toBe(true);
+    expect(mockLlm.updateProviderSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      enableWebSearch: true,
+      model: "upstage/solar-pro4",
+    }));
+
+    const rejected = await app.handle(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl: "https://api.other-provider.example/v1", enableWebSearch: true }),
+      }),
+    );
+    expect(rejected.status).toBe(400);
+    expect((await rejected.json()).error).toContain("OpenRouter web search");
+  });
+
   it("saves a preset and lists it with a masked api key", async () => {
     const put = await app.handle(
       new Request(`http://localhost/api/settings/presets/${encodeURIComponent("내 프리셋")}`, {
@@ -250,6 +318,7 @@ describe("Elysia Admin Server", () => {
           model: "preset-model",
           maxTokens: 1024,
           enableThinking: false,
+          enableWebSearch: false,
           systemPrompt: "프리셋 프롬프트",
         }),
       }),

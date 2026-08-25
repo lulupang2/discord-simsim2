@@ -21,6 +21,7 @@ export interface LlmProviderSettings {
   readonly model: string;
   readonly maxTokens: number | undefined;
   readonly enableThinking: boolean;
+  readonly enableWebSearch: boolean;
 }
 
 export interface LlmProviderControl extends LlmStreamClient {
@@ -38,6 +39,7 @@ export interface OpenAICompatibleClientOptions {
   readonly fetchImpl?: FetchLike;
   readonly maxTokens?: number;
   readonly enableThinking?: boolean;
+  readonly enableWebSearch?: boolean;
   readonly sleepImpl?: (milliseconds: number) => Promise<void>;
 }
 
@@ -55,6 +57,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
   #fetch: FetchLike;
   #maxTokens: number | undefined;
   #enableThinking: boolean;
+  #enableWebSearch: boolean;
   #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: OpenAICompatibleClientOptions) {
@@ -65,6 +68,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     this.#sleep = options.sleepImpl ?? sleep;
     this.#maxTokens = options.maxTokens;
     this.#enableThinking = options.enableThinking ?? true;
+    this.#enableWebSearch = options.enableWebSearch ?? false;
   }
 
   getProviderSettings(): LlmProviderSettings {
@@ -74,6 +78,7 @@ export class OpenAICompatibleClient implements LlmProviderControl {
       model: this.#model,
       maxTokens: this.#maxTokens,
       enableThinking: this.#enableThinking,
+      enableWebSearch: this.#enableWebSearch,
     };
   }
 
@@ -83,15 +88,20 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     this.#endpoint = chatCompletionsEndpoint(settings.baseUrl);
     this.#maxTokens = settings.maxTokens;
     this.#enableThinking = settings.enableThinking;
+    this.#enableWebSearch = settings.enableWebSearch;
   }
 
   async testConnection(): Promise<void> {
-    const response = await this.#fetchWithRetry(JSON.stringify({
+    const body: Record<string, unknown> = {
       model: this.#model,
       messages: [{ role: "user", content: "ping" }],
       max_tokens: 16,
       ...(this.#enableThinking ? {} : { enable_thinking: false }),
-    }));
+    };
+    if (this.#enableWebSearch) {
+      body.tools = [OPENROUTER_WEB_SEARCH_TOOL];
+    }
+    const response = await this.#fetchWithRetry(JSON.stringify(body));
     if (!response.ok) {
       throw await providerHttpError(response);
     }
@@ -113,6 +123,9 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     if (!this.#enableThinking) {
       body.enable_thinking = false;
     }
+    if (this.#enableWebSearch) {
+      body.tools = [OPENROUTER_WEB_SEARCH_TOOL];
+    }
     const response = await this.#fetchWithRetry(JSON.stringify(body));
 
     if (!response.ok) {
@@ -131,8 +144,9 @@ export class OpenAICompatibleClient implements LlmProviderControl {
       throw new LlmProviderError("The LLM provider returned no text response.");
     }
 
-    await request.onDelta(content);
-    return content;
+    const completedContent = appendWebCitations(content, payload);
+    await request.onDelta(completedContent);
+    return completedContent;
   }
 
   async #fetchWithRetry(body: string): Promise<Response> {
@@ -169,6 +183,16 @@ export class OpenAICompatibleClient implements LlmProviderControl {
 }
 
 const CHAT_COMPLETIONS_PATH = "/chat/completions";
+
+const OPENROUTER_WEB_SEARCH_TOOL = {
+  type: "openrouter:web_search",
+  parameters: {
+    engine: "auto",
+    max_results: 3,
+    max_uses: 1,
+    search_context_size: "low",
+  },
+} as const;
 
 function chatCompletionsEndpoint(baseUrl: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
@@ -240,11 +264,73 @@ function readCompletionContent(payload: unknown): string | undefined {
 }
 
 function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
+
   const retryAfterSeconds = Number(retryAfterHeader);
   if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
     return Math.min(retryAfterSeconds * 1_000, 10_000);
   }
   return Math.min(RETRY_BASE_DELAY_MS * (2 ** (attempt - 1)), 10_000);
+}
+function appendWebCitations(content: string, payload: unknown): string {
+  if (
+    typeof payload !== "object"
+    || payload === null
+    || !("choices" in payload)
+    || !Array.isArray(payload.choices)
+    || payload.choices.length === 0
+  ) {
+    return content;
+  }
+  const firstChoice = payload.choices[0];
+  if (
+    typeof firstChoice !== "object"
+    || firstChoice === null
+    || !("message" in firstChoice)
+    || typeof firstChoice.message !== "object"
+    || firstChoice.message === null
+    || !("annotations" in firstChoice.message)
+    || !Array.isArray(firstChoice.message.annotations)
+  ) {
+    return content;
+  }
+
+  const citations = new Map<string, string>();
+  for (const annotation of firstChoice.message.annotations) {
+    if (
+      typeof annotation !== "object"
+      || annotation === null
+      || !("type" in annotation)
+      || annotation.type !== "url_citation"
+      || !("url_citation" in annotation)
+      || typeof annotation.url_citation !== "object"
+      || annotation.url_citation === null
+      || !("url" in annotation.url_citation)
+      || typeof annotation.url_citation.url !== "string"
+    ) {
+      continue;
+    }
+    const url = annotation.url_citation.url;
+    try {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        continue;
+      }
+      const title = "title" in annotation.url_citation && typeof annotation.url_citation.title === "string"
+        ? annotation.url_citation.title.trim()
+        : "";
+      citations.set(url, title.length === 0 ? parsedUrl.hostname : title);
+    } catch {
+      continue;
+    }
+  }
+
+  if (citations.size === 0) {
+    return content;
+  }
+  const citationLines = [...citations.entries()]
+    .slice(0, 5)
+    .map(([url, title]) => `- [${title}](${url})`);
+  return `${content.trimEnd()}\n\n출처:\n${citationLines.join("\n")}`;
 }
 
 async function sleep(milliseconds: number): Promise<void> {

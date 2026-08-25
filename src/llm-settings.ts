@@ -7,6 +7,7 @@ export interface BotSettings {
   readonly model: string;
   readonly maxTokens: number;
   readonly enableThinking: boolean;
+  readonly enableWebSearch: boolean;
   readonly systemPrompt: string | undefined;
 }
 
@@ -42,6 +43,13 @@ export function validateSettings(candidate: BotSettings): void {
   if (typeof candidate.enableThinking !== "boolean") {
     throw new SettingsValidationError("enableThinking must be a boolean.");
   }
+  if (typeof candidate.enableWebSearch !== "boolean") {
+    throw new SettingsValidationError("enableWebSearch must be a boolean.");
+  }
+  if (candidate.enableWebSearch && url.hostname !== "openrouter.ai") {
+    throw new SettingsValidationError("OpenRouter web search requires https://openrouter.ai/api/v1.");
+  }
+
 }
 
 export function maskApiKey(apiKey: string): string {
@@ -93,6 +101,7 @@ function coerceBotSettings(parsed: Partial<BotSettings>): BotSettings {
     model: String(parsed.model ?? ""),
     maxTokens: Number(parsed.maxTokens),
     enableThinking: parsed.enableThinking === undefined ? true : Boolean(parsed.enableThinking),
+    enableWebSearch: parsed.enableWebSearch === undefined ? false : Boolean(parsed.enableWebSearch),
     systemPrompt: parsed.systemPrompt === null ? undefined : parsed.systemPrompt,
   };
 }
