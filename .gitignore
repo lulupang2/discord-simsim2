@@ -6,3 +6,4 @@ coverage/
 !.env.example
 *.log
 llm-settings.json
+llm-settings-presets.json
