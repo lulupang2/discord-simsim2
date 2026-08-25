@@ -73,12 +73,17 @@ export function attachDiscordMessageHandler(
     }
 
     // 3. 일반 대화 처리 (멘션 또는 DM) - 완전 비동기 병렬 실행
+    const imageUrls = message.attachments
+      .filter((att) => (att.contentType !== null && att.contentType.startsWith("image/")) || /\.(png|jpe?g|webp|gif)$/i.test(att.name))
+      .map((att) => att.url);
+
     const prompt = extractPrompt({
       content: message.content,
       authorIsBot: message.author.bot,
       isWebhook: message.webhookId !== null,
       isDirectMessage: !message.inGuild(),
       botUserId,
+      hasAttachments: imageUrls.length > 0,
     });
     if (prompt === null) {
       return;
@@ -101,6 +106,7 @@ export function attachDiscordMessageHandler(
       botUserId,
       userDisplayName,
       prompt,
+      imageUrls,
       transport,
     }).catch((error: unknown) => {
       logger.error("Discord message handler failed unexpectedly.", {

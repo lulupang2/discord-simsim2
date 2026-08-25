@@ -4,6 +4,7 @@ export interface TriggerMessage {
   readonly isWebhook: boolean;
   readonly isDirectMessage: boolean;
   readonly botUserId: string;
+  readonly hasAttachments?: boolean;
 }
 
 export function extractPrompt(message: TriggerMessage): string | null {
@@ -20,5 +21,8 @@ export function extractPrompt(message: TriggerMessage): string | null {
   }
 
   const prompt = message.content.replace(ownMention, "").trim();
-  return prompt.length === 0 ? null : prompt;
+  if (prompt.length === 0) {
+    return message.hasAttachments ? "이 이미지에 대해 설명해줘." : null;
+  }
+  return prompt;
 }

@@ -253,5 +253,118 @@ describe("OpenAICompatibleClient", () => {
       enable_thinking: false,
     });
   });
+
+  it("extracts reasoning_content when content is empty or null", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: null,
+            reasoning_content: "추론 결과 답변입니다.",
+          },
+        }],
+      }), { status: 200 }),
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "질문" }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toBe("추론 결과 답변입니다.");
+  });
+
+  it("returns a descriptive notice when finish_reason is length and content is empty", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen/qwen3.8-max-free",
+      baseUrl: "https://api.tokenrouter.com/v1",
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{
+          finish_reason: "length",
+          message: { content: "" },
+        }],
+      }), { status: 200 }),
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "질문" }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toContain("최대 토큰 한도에 도달했습니다");
+  });
+
+  it("returns citations notice when search returned citations but no summary text", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "upstage/solar-pro4",
+      baseUrl: "https://openrouter.ai/api/v1",
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: "",
+            annotations: [{
+              type: "url_citation",
+              url_citation: { url: "https://example.com/item", title: "Example" },
+            }],
+          },
+        }],
+      }), { status: 200 }),
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "검색해줘" }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toContain("검색 결과를 확인했으나 요약 텍스트를 생성하지 못했습니다.");
+    expect(response).toContain("[Example](https://example.com/item)");
+  });
+
+  it("forwards multimodal content parts including image_url", async () => {
+    let capturedInit: RequestInit | undefined;
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "google/gemini-2.5-flash",
+      baseUrl: "https://openrouter.ai/api/v1",
+      fetchImpl: async (_input, init) => {
+        capturedInit = init;
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "고양이 사진이네요." } }],
+        }), { status: 200 });
+      },
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "이 이미지 뭐야?" },
+          { type: "image_url", image_url: { url: "https://cdn.discordapp.com/attachments/123/cat.png" } },
+        ],
+      }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toBe("고양이 사진이네요.");
+    expect(JSON.parse(String(capturedInit?.body))).toMatchObject({
+      model: "google/gemini-2.5-flash",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "이 이미지 뭐야?" },
+          { type: "image_url", image_url: { url: "https://cdn.discordapp.com/attachments/123/cat.png" } },
+        ],
+      }],
+    });
+  });
 });
 

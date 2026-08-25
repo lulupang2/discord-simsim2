@@ -455,4 +455,30 @@ describe("ConversationService", () => {
       { role: "assistant", content: "answer-2" },
     ]);
   });
+
+  it("includes image attachment URLs in the user message when provided", async () => {
+    const llm = new RecordingClient(async () => "이미지 분석 완료");
+    const store = new RecordingStore();
+    const service = new ConversationService(llm, {
+      maxHistoryMessages: 10,
+      systemPrompt: undefined,
+      store,
+      logger: createLogger(),
+    });
+    const transport = new RecordingTransport();
+
+    await service.handle({
+      ...request("channel", "이 사진 뭐야?", transport),
+      userDisplayName: "민수",
+      imageUrls: ["https://cdn.discordapp.com/attachments/123/photo.png"],
+    });
+
+    expect(llm.requests[0]?.messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "민수: 이 사진 뭐야?" },
+        { type: "image_url", image_url: { url: "https://cdn.discordapp.com/attachments/123/photo.png" } },
+      ],
+    }]);
+  });
 });

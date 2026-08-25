@@ -27,6 +27,7 @@ export interface ConversationRequest {
   readonly botUserId: string;
   readonly userDisplayName: string;
   readonly prompt: string;
+  readonly imageUrls?: readonly string[];
   readonly transport: ConversationTransport;
 }
 
@@ -169,7 +170,18 @@ export class ConversationService {
         ? `${turn.authorName?.trim() || UNKNOWN_SPEAKER_NAME}: ${turn.content}`
         : turn.content,
     }));
-    const userMessage: ChatMessage = { role: "user", content: `${speakerName}: ${request.prompt}` };
+    const userMessage: ChatMessage = request.imageUrls !== undefined && request.imageUrls.length > 0
+      ? {
+        role: "user",
+        content: [
+          { type: "text", text: `${speakerName}: ${request.prompt}` },
+          ...request.imageUrls.map((url) => ({
+            type: "image_url" as const,
+            image_url: { url },
+          })),
+        ],
+      }
+      : { role: "user", content: `${speakerName}: ${request.prompt}` };
     const messages = [...historyMessages, userMessage];
     const writer = new LiveStreamWriter(request.transport, this.#streamOptions);
 

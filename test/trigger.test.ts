@@ -32,6 +32,14 @@ describe("extractPrompt", () => {
     })).toBe("ask <@999999> about  this");
   });
 
+  it("provides a default description prompt when an attachment is present without text", () => {
+    expect(extractPrompt({
+      ...BASE_MESSAGE,
+      content: "<@123456>",
+      hasAttachments: true,
+    })).toBe("이 이미지에 대해 설명해줘.");
+  });
+
   it.each([
     ["bot author", { authorIsBot: true }],
     ["webhook", { isWebhook: true }],

@@ -1,8 +1,14 @@
 export type ChatRole = "user" | "assistant";
 
+export type MessageContentPart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "image_url"; readonly image_url: { readonly url: string } };
+
+export type ChatMessageContent = string | readonly MessageContentPart[];
+
 export interface ChatMessage {
   readonly role: ChatRole;
-  readonly content: string;
+  readonly content: ChatMessageContent;
 }
 
 export interface StreamCompletionRequest {
@@ -140,15 +146,21 @@ export class OpenAICompatibleClient implements LlmProviderControl {
     }
 
     const content = readCompletionContent(payload);
+    let completedContent: string;
     if (content === undefined || content.trim().length === 0) {
-      throw new LlmProviderError("The LLM provider returned no text response.");
+      const citationsOnly = appendWebCitations("", payload);
+      if (citationsOnly.trim().length > 0) {
+        completedContent = `검색 결과를 확인했으나 요약 텍스트를 생성하지 못했습니다.${citationsOnly}`;
+      } else {
+        throw new LlmProviderError("The LLM provider returned no text response.");
+      }
+    } else {
+      completedContent = appendWebCitations(content, payload);
     }
 
-    const completedContent = appendWebCitations(content, payload);
     await request.onDelta(completedContent);
     return completedContent;
   }
-
   async #fetchWithRetry(body: string): Promise<Response> {
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
       let response: Response;
@@ -249,18 +261,38 @@ function readCompletionContent(payload: unknown): string | undefined {
     return undefined;
   }
   const firstChoice: unknown = choices[0];
-  if (
-    typeof firstChoice !== "object" ||
-    firstChoice === null ||
-    !("message" in firstChoice) ||
-    typeof firstChoice.message !== "object" ||
-    firstChoice.message === null ||
-    !("content" in firstChoice.message) ||
-    typeof firstChoice.message.content !== "string"
-  ) {
+  if (typeof firstChoice !== "object" || firstChoice === null) {
     return undefined;
   }
-  return firstChoice.message.content;
+
+  if ("message" in firstChoice && typeof firstChoice.message === "object" && firstChoice.message !== null) {
+    const message = firstChoice.message;
+    if ("content" in message && typeof message.content === "string" && message.content.trim().length > 0) {
+      return message.content;
+    }
+    if ("reasoning_content" in message && typeof message.reasoning_content === "string" && message.reasoning_content.trim().length > 0) {
+      return message.reasoning_content;
+    }
+    if ("reasoning" in message && typeof message.reasoning === "string" && message.reasoning.trim().length > 0) {
+      return message.reasoning;
+    }
+    if ("refusal" in message && typeof message.refusal === "string" && message.refusal.trim().length > 0) {
+      return message.refusal;
+    }
+    if ("tool_calls" in message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      return "🔍 웹 검색 또는 도구 호출을 수행했으나 모델이 최종 답변 텍스트를 생성하지 않았습니다.";
+    }
+  }
+
+  if ("text" in firstChoice && typeof firstChoice.text === "string" && firstChoice.text.trim().length > 0) {
+    return firstChoice.text;
+  }
+
+  if ("finish_reason" in firstChoice && firstChoice.finish_reason === "length") {
+    return "⚠️ 답변 생성 중 최대 토큰 한도에 도달했습니다. 대시보드에서 최대 토큰(max_tokens) 수를 늘려주세요.";
+  }
+
+  return undefined;
 }
 
 function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
