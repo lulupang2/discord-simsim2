@@ -78,6 +78,41 @@ describe("OpenAICompatibleClient", () => {
     expect(delays).toEqual([1_000]);
   });
 
+  it("retries transient 502 and 504 gateway responses", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const client = new OpenAICompatibleClient({
+      apiKey: "test-key",
+      model: "qwen-3.8-max-free",
+      baseUrl: "https://router.bynara.id/v1",
+      sleepImpl: async (milliseconds) => {
+        delays.push(milliseconds);
+      },
+      fetchImpl: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response("bad gateway", { status: 502 });
+        }
+        if (attempts === 2) {
+          return new Response("gateway timeout", { status: 504 });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "recovered" } }],
+        }), { status: 200 });
+      },
+    });
+
+    const response = await client.stream({
+      systemPrompt: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      onDelta: () => undefined,
+    });
+
+    expect(response).toBe("recovered");
+    expect(attempts).toBe(3);
+    expect(delays).toEqual([1_000, 2_000]);
+  });
+
   it("reports provider errors without response-body leakage", async () => {
     const client = new OpenAICompatibleClient({
       apiKey: "test-key",

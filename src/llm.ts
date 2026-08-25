@@ -181,7 +181,13 @@ export class OpenAICompatibleClient implements LlmProviderControl {
         continue;
       }
 
-      const retryable = response.status === 429 || response.status === 503;
+      const retryable =
+        response.status === 429
+        || response.status === 500
+        || response.status === 502
+        || response.status === 503
+        || response.status === 504
+        || response.status === 524;
       if (!retryable || attempt === MAX_REQUEST_ATTEMPTS) {
         return response;
       }
